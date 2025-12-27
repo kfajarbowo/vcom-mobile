@@ -4,13 +4,11 @@ import {Text, View, StyleSheet} from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {ChatsScreen} from '../screens/main/ChatsScreen';
 import {CallsScreen} from '../screens/main/CallsScreen';
-import {LapsitScreen} from '../screens/main/LapsitScreen';
 import {SettingsScreen} from '../screens/main/SettingsScreen';
 
 export type MainTabParamList = {
   Chats: undefined;
   Calls: undefined;
-  Lapsit: undefined;
   Settings: undefined;
 };
 
@@ -76,15 +74,6 @@ export function MainNavigator() {
         options={{
           tabBarIcon: ({focused}) => (
             <TabIcon iconName="phone" label="CALLS" focused={focused} />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="Lapsit"
-        component={LapsitScreen}
-        options={{
-          tabBarIcon: ({focused}) => (
-            <TabIcon iconName="chart-bar" label="LAPSIT" focused={focused} />
           ),
         }}
       />

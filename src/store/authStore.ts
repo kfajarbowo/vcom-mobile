@@ -49,18 +49,25 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialize: async () => {
     try {
       const token = await AsyncStorage.getItem('vcomm_session_token');
-      set({sessionToken: token, isLoading: false});
 
-      // If user has a stored session, connect to WebSocket
       if (token) {
-        const {websocketService} = await import('../services/websocket');
-        websocketService.connect().catch((error) => {
-          console.error('[Auth] WebSocket connection error:', error);
-        });
-        console.log('[Auth] WebSocket connection initiated for stored session');
+        // Fetch user data from server to verify token and get user info
+        try {
+          const {apiRequest} = await import('../services/apiClient');
+          const userData = await apiRequest<User>('/api/auth/user');
+          console.log('[Auth] User data loaded:', userData);
+          set({sessionToken: token, user: userData, isLoading: false});
+        } catch (error) {
+          console.error('[Auth] Failed to fetch user data, token may be invalid:', error);
+          // Clear invalid token
+          await AsyncStorage.removeItem('vcomm_session_token');
+          set({sessionToken: null, user: null, isLoading: false});
+        }
+      } else {
+        set({sessionToken: null, user: null, isLoading: false});
       }
     } catch (error) {
-      console.error('Failed to initialize auth:', error);
+      console.error('[Auth] Failed to initialize auth:', error);
       set({isLoading: false});
     }
   },

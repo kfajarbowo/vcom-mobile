@@ -3,7 +3,6 @@ import {View} from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import {ChatList} from '../../components/ChatList';
 import {ChatRoom} from '../../components/ChatRoom';
-import {websocketService} from '../../services/websocket';
 import {useChatStore} from '../../store/chatStore';
 
 export function ChatsScreen() {
@@ -16,21 +15,6 @@ export function ChatsScreen() {
   } | null>(null);
 
   const conversations = useChatStore((state) => state.conversations);
-
-  useEffect(() => {
-    console.log('[ChatsScreen] Mounting, connecting WebSocket...');
-
-    // Try to connect WebSocket, but don't block if it fails
-    websocketService.connect().catch((error) => {
-      console.warn('[ChatsScreen] WebSocket connection failed (non-critical):', error);
-      console.log('[ChatsScreen] App will work without real-time updates');
-    });
-
-    return () => {
-      console.log('[ChatsScreen] Unmounting, disconnecting WebSocket...');
-      websocketService.disconnect();
-    };
-  }, []);
 
   // Hide/show tab bar based on conversation selection
   useEffect(() => {

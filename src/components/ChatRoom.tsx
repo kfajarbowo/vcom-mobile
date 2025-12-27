@@ -170,11 +170,11 @@ export function ChatRoom({
       console.log('[ChatRoom] Current user ID:', user?.id);
 
       const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any) => {
-        console.log('[ChatRoom] Message from senderId:', msg.senderId, 'content:', msg.content?.substring(0, 20));
+        console.log('[ChatRoom] Message from senderId:', msg.senderId, 'senderName:', msg.senderName, 'content:', msg.content?.substring(0, 20));
         return {
           id: msg.id,
           senderId: msg.senderId,
-          senderName: msg.senderName || msg.senderCallsign || 'Unknown',
+          senderName: msg.senderName || 'Unknown',
           content: msg.content,
           timestamp: msg.timestamp || msg.createdAt,
           isRead: msg.isRead || false,
@@ -677,10 +677,19 @@ export function ChatRoom({
         <View style={styles.headerActions}>
           <TouchableOpacity
             style={styles.callButton}
+            onPress={() => handleStartCall('video')}>
+            <MaterialCommunityIcons
+              name="video"
+              size={18}
+              color="#a6c455"
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.callButton}
             onPress={() => handleStartCall('audio')}>
             <MaterialCommunityIcons
               name="phone"
-              size={20}
+              size={18}
               color="#a6c455"
             />
           </TouchableOpacity>
@@ -1103,17 +1112,19 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   headerActions: {
-    marginLeft: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   callButton: {
-    width: 40,
-    height: 40,
-    backgroundColor: '#4d5d30',
-    borderRadius: 4,
+    width: 36,
+    height: 36,
+    backgroundColor: '#2a2a2a',
+    borderRadius: 6,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#5a6b38',
+    borderColor: '#4d5d30',
   },
   messagesContent: {
     padding: 16,
