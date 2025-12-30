@@ -13,7 +13,7 @@ import {useCallStore} from '../store/callStore';
 
 export function AppNavigator() {
   const {sessionToken, isLoading, initialize, user} = useAuthStore();
-  const isGroupCall = useCallStore((state) => state.isGroupCall);
+  const isGroupCall = useCallStore((state: any) => state.isGroupCall);
   const appState = useRef(AppState.currentState);
 
   // Initialize auth store on mount

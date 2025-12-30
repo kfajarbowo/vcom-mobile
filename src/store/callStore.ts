@@ -114,7 +114,7 @@ const initialState = {
   groupName: null,
 };
 
-export const useCallStore = create<CallState>((set) => ({
+export const useCallStore: any = create<CallState>((set) => ({
   ...initialState,
 
   setCallStatus: (status) => set({status}),

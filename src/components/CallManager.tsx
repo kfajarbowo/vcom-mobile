@@ -149,6 +149,12 @@ export function CallManager() {
             break;
           }
 
+          case 'call_rejected': {
+            console.log('[CallManager] Call rejected by remote peer');
+            webrtcService.endCall();
+            break;
+          }
+
           // Group call handlers
           case 'initiate_call': {
             // This handles both 1-on-1 and group call invitations

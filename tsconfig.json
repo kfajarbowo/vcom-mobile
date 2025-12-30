@@ -1,3 +1,28 @@
 {
-  "extends": "@react-native/typescript-config/tsconfig.json"
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  "compilerOptions": {
+    // ... other standard options (strict: true, etc.)
+
+    /* Module Options */
+     "moduleResolution": "bundler", 
+
+    // This will now be compatible with 'customConditions'
+    "customConditions": ["react-native"], // (assuming you have this line)
+
+    // Ensure module is modern as well
+    "module": "ESNext",
+
+    "target": "es2017", // or es2020/esnext
+
+    /* React Native Specific */
+    "jsx": "react-native", // Essential for React Native projects
+    "noEmit": true,        // Tells tsc NOT to produce JS files, Babel handles that
+
+    /* Ensure dynamic imports work */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+  },
+  "exclude": [
+    "node_modules"
+  ]
 }

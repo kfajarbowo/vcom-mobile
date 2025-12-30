@@ -1,6 +1,7 @@
 import {getApiBaseUrl, getSessionToken} from './apiClient';
 import {useChatStore} from '../store/chatStore';
 
+
 export type WebSocketMessage = {
   type:
     | 'new_message'

@@ -1,7 +1,7 @@
 import React from 'react';
 import {View, Text, Modal, TouchableOpacity, StyleSheet} from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useCallStore} from '../store/callStore';
+import {Participant, useCallStore} from '../store/callStore';
 import {webrtcService} from '../services/webrtcService';
 
 export function IncomingCallModal() {
@@ -20,7 +20,7 @@ export function IncomingCallModal() {
         useCallStore.getState().setCallStatus('calling');
 
         // Get participant IDs
-        const participantIds = participants.map(p => p.userId);
+        const participantIds = participants.map((p: Participant) => p.userId);
 
         // Start group call
         await webrtcService.startGroupCall(participantIds);
@@ -52,7 +52,7 @@ export function IncomingCallModal() {
     if (isGroupCall) {
       webrtcService.endGroupCall();
     } else {
-      webrtcService.endCall();
+      webrtcService.rejectCall();
     }
   };
 
