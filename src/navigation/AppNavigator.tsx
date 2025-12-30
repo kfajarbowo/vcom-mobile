@@ -6,11 +6,14 @@ import {AuthNavigator} from './AuthNavigator';
 import {MainNavigator} from './MainNavigator';
 import {IncomingCallModal} from '../components/IncomingCallModal';
 import {ActiveCallScreen} from '../components/ActiveCallScreen';
+import {GroupCallScreen} from '../components/GroupCallScreen';
 import {CallManager} from '../components/CallManager';
 import {websocketService} from '../services/websocket';
+import {useCallStore} from '../store/callStore';
 
 export function AppNavigator() {
   const {sessionToken, isLoading, initialize, user} = useAuthStore();
+  const isGroupCall = useCallStore((state) => state.isGroupCall);
   const appState = useRef(AppState.currentState);
 
   // Initialize auth store on mount
@@ -78,7 +81,7 @@ export function AppNavigator() {
         <>
           <CallManager />
           <IncomingCallModal />
-          <ActiveCallScreen />
+          {isGroupCall ? <GroupCallScreen /> : <ActiveCallScreen />}
         </>
       )}
     </>

@@ -17,8 +17,9 @@ export const STORAGE_KEYS = {
  * Get base API URL from storage or use default
  */
 export const getApiBaseUrl = async (): Promise<string> => {
-  // const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '31.97.50.227';
-  const host = '31.97.50.227';
+  // const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '10.0.2.2';
+  // Use local network IP to access server from real devices
+  const host = '192.168.100.79';
   const port = '5000';
 
   // const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';

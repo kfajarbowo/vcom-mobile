@@ -7,6 +7,7 @@ export type WebSocketMessage = {
     | 'user_status'
     | 'typing'
     | 'read_receipt'
+    | 'incoming_call'
     | 'webrtc_offer'
     | 'webrtc_answer'
     | 'webrtc_ice_candidate'
@@ -15,11 +16,18 @@ export type WebSocketMessage = {
     | 'group_webrtc_ice_candidate'
     | 'start_group_call'
     | 'join_group_call'
+    | 'initiate_call'
+    | 'initiate_group_webrtc'
     | 'end_call'
     | 'call_accepted'
+    | 'call_ended'
+    | 'call_missed'
     | 'incoming_group_call'
     | 'group_call_participants_update'
     | 'group_call_ended'
+    | 'leave_group_call'
+    | 'participant_joined'
+    | 'participant_left'
     | 'group_update';
   payload: any;
 };
@@ -179,7 +187,7 @@ class WebSocketService {
     }
   }
 
-  private handleMessage(message: WebSocketMessage): void {
+  private async handleMessage(message: WebSocketMessage): Promise<void> {
     this.messageHandlers.forEach((handler) => {
       try {
         handler(message);
@@ -194,6 +202,43 @@ class WebSocketService {
       case 'new_message': {
         const {conversationId, ...messageData} = message.payload;
         if (conversationId) {
+          // Check if conversation exists in the store
+          const conversationExists = chatStore.conversations.some(
+            (conv) => conv.id === conversationId
+          );
+
+          // If conversation doesn't exist, fetch it from the API and add to store
+          if (!conversationExists) {
+            console.log('[WebSocket] New conversation detected, fetching details...');
+            try {
+              const {apiRequest} = await import('./apiClient');
+              const conversationData = await apiRequest(`/api/conversations/${conversationId}`);
+
+              if (conversationData) {
+                chatStore.addConversation({
+                  id: conversationData.id,
+                  name: conversationData.name || 'Unnamed Chat',
+                  isGroup: conversationData.isGroup || false,
+                  lastMessage: messageData.content,
+                  lastMessageTime: messageData.timestamp || new Date().toISOString(),
+                  unreadCount: 1,
+                  members: conversationData.memberCount || 2,
+                  otherUserId: conversationData.otherUserId,
+                });
+                console.log('[WebSocket] ✅ New conversation added to store');
+              }
+            } catch (error) {
+              console.error('[WebSocket] ❌ Error fetching conversation details:', error);
+            }
+          } else {
+            // Conversation exists, update it normally
+            chatStore.updateConversation(conversationId, {
+              lastMessage: messageData.content,
+              lastMessageTime: messageData.timestamp || new Date().toISOString(),
+            });
+          }
+
+          // Add the message to the conversation
           chatStore.addMessage(conversationId, {
             id: messageData.id,
             senderId: messageData.senderId,
@@ -208,11 +253,6 @@ class WebSocketService {
             attachmentName: messageData.attachmentName,
             attachmentSize: messageData.attachmentSize,
             replyToId: messageData.replyToId,
-          });
-
-          chatStore.updateConversation(conversationId, {
-            lastMessage: messageData.content,
-            lastMessageTime: messageData.timestamp || new Date().toISOString(),
           });
         }
         break;

@@ -64,6 +64,11 @@ export function ChatRoom({
       : []
   );
 
+  // Subscribe to pagination info for loading indicator
+  const paginationInfo = useChatStore((state) =>
+    state.pagination.get(conversationId)
+  );
+
   // Load base URL for attachment display
   useEffect(() => {
     getApiBaseUrl().then((url) => {
@@ -155,22 +160,82 @@ export function ChatRoom({
     };
   }, [conversationId]);
 
-  const loadMessages = async (showLoading: boolean = false) => {
+  const loadMessages = async (showLoading: boolean = false, loadMore: boolean = false) => {
     try {
       if (showLoading) {
         setIsLoading(true);
       }
-      console.log('[ChatRoom] Loading messages for conversation:', conversationId);
 
-      const data = await apiRequest(
-        `/api/conversations/${conversationId}/messages`
+      const paginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
+
+      // If already loading or no more messages, return
+      if (loadMore && (paginationInfo?.isLoading || !paginationInfo?.hasMore)) {
+        console.log('[ChatRoom] Skipping load - already loading or no more messages');
+        return;
+      }
+
+      // Set loading state in pagination
+      if (loadMore) {
+        useChatStore.getState().setPaginationInfo(conversationId, {isLoading: true});
+      }
+
+      const limit = 15;
+      let offset = loadMore ? (paginationInfo?.offset || 0) : 0;
+
+      // For initial load, check if there are unread messages
+      // If yes, we need to load from the last 15 read messages
+      if (!loadMore && offset === 0) {
+        console.log('[ChatRoom] Initial load - checking for unread messages...');
+
+        // First, get total count and check for unread messages
+        // We need to call without pagination to get all messages for checking
+        const checkResponse = await apiRequest(
+          `/api/conversations/${conversationId}/messages`
+        );
+
+        if (checkResponse) {
+          const allMessages = checkResponse?.messages || checkResponse || [];
+          const total = checkResponse?.total || allMessages.length || 0;
+
+          // Find first unread message that's not sent by current user
+          const firstUnreadIndex = allMessages.findIndex(
+            (msg: any) => !msg.isRead && Number(msg.senderId) !== Number(user?.id)
+          );
+
+          console.log('[ChatRoom] Total messages:', total, 'First unread index:', firstUnreadIndex);
+
+          if (firstUnreadIndex !== -1 && firstUnreadIndex >= limit) {
+            // There are unread messages beyond the first 15
+            // Calculate offset to load the last 15 read messages
+            // If there are 50 messages total and first unread is at index 40,
+            // we want to load messages from index 25-39 (15 read messages before the unread)
+            const readMessagesCount = firstUnreadIndex;
+            offset = Math.max(0, total - readMessagesCount - limit);
+
+            console.log('[ChatRoom] Unread messages detected. Loading from offset:', offset);
+            console.log('[ChatRoom] This will show last 15 read messages');
+          } else {
+            console.log('[ChatRoom] No unread messages or fewer than 15 read messages. Will load last 15.');
+          }
+        }
+      }
+
+      console.log('[ChatRoom] Loading messages for conversation:', conversationId, 'limit:', limit, 'offset:', offset, 'loadMore:', loadMore);
+
+      // Now make the actual paginated request
+      const response = await apiRequest(
+        `/api/conversations/${conversationId}/messages?limit=${limit}&offset=${offset}`
       );
 
-      console.log('[ChatRoom] Received messages:', data?.length || 0);
-      console.log('[ChatRoom] Current user ID:', user?.id);
+      console.log('[ChatRoom] Received response:', response);
+
+      const data = response?.messages || response || [];
+      const total = response?.total || 0;
+      const hasMore = response?.hasMore || false;
+
+      console.log('[ChatRoom] Received messages:', data?.length || 0, 'total:', total, 'hasMore:', hasMore);
 
       const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any) => {
-        console.log('[ChatRoom] Message from senderId:', msg.senderId, 'senderName:', msg.senderName, 'content:', msg.content?.substring(0, 20));
         return {
           id: msg.id,
           senderId: msg.senderId,
@@ -190,19 +255,37 @@ export function ChatRoom({
         };
       });
 
-      console.log('[ChatRoom] Setting', formattedMessages.length, 'messages to store');
-      setMessages(conversationId, formattedMessages);
+      console.log('[ChatRoom] Formatted', formattedMessages.length, 'messages');
 
-      await apiRequest(`/api/conversations/${conversationId}/mark-read`, {
-        method: 'POST',
-      }).catch(err => console.warn('[ChatRoom] Mark read failed:', err));
+      if (loadMore) {
+        // Prepend older messages
+        useChatStore.getState().prependMessages(conversationId, formattedMessages);
+      } else {
+        // Initial load - set messages
+        setMessages(conversationId, formattedMessages);
+      }
 
-      // Scroll to end after loading
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({animated: !showLoading});
-      }, showLoading ? 300 : 100);
+      // Update pagination info
+      useChatStore.getState().setPaginationInfo(conversationId, {
+        total,
+        offset: offset + formattedMessages.length,
+        hasMore,
+        isLoading: false,
+      });
+
+      if (!loadMore) {
+        await apiRequest(`/api/conversations/${conversationId}/mark-read`, {
+          method: 'POST',
+        }).catch(err => console.warn('[ChatRoom] Mark read failed:', err));
+
+        // Scroll to end after initial load
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({animated: !showLoading});
+        }, showLoading ? 300 : 100);
+      }
     } catch (error) {
       console.error('[ChatRoom] Error loading messages:', error);
+      useChatStore.getState().setPaginationInfo(conversationId, {isLoading: false});
     } finally {
       if (showLoading) {
         setIsLoading(false);
@@ -364,14 +447,9 @@ export function ChatRoom({
       console.log('[ChatRoom] isGroup:', isGroup);
       console.log('[ChatRoom] conversationMembers:', conversationMembers);
 
-      // For group calls, we need different handling
+      // For group calls, use group call handling
       if (isGroup) {
-        Alert.alert(
-          'Group Calls Not Yet Supported',
-          'Group calls are coming soon!',
-          [{text: 'OK', style: 'default'}]
-        );
-        return;
+        return handleStartGroupCall(callType);
       }
 
       // Find the other user ID from conversation members (same as web version)
@@ -449,6 +527,83 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           'Unable to start call. Please try again.',
+          [{text: 'OK', style: 'default'}]
+        );
+      }
+    }
+  };
+
+  const handleStartGroupCall = async (callType: 'audio' | 'video') => {
+    try {
+      console.log('[ChatRoom] Starting group call:', callType);
+
+      // Get all participant IDs (excluding current user)
+      const participantIds = conversationMembers
+        .filter((member: any) => member.userId !== user?.id)
+        .map((member: any) => member.userId);
+
+      console.log('[ChatRoom] Group call participants:', participantIds);
+
+      if (participantIds.length === 0) {
+        Alert.alert(
+          'No Participants',
+          'Cannot start a group call with no other participants.',
+          [{text: 'OK', style: 'default'}]
+        );
+        return;
+      }
+
+      // Generate unique call ID
+      const callId = `group_call_${Date.now()}_${user?.id}`;
+
+      // Initialize group call in store
+      useCallStore.getState().startGroupCall({
+        callId,
+        callType,
+        participantIds,
+        conversationId,
+        groupName: conversationName,
+      });
+
+      // Notify all participants via WebSocket
+      websocketService.send({
+        type: 'start_group_call',
+        payload: {
+          callId,
+          groupId: conversationId,
+          groupName: conversationName,
+          callType,
+          fromUserId: user?.id,
+          fromUserName: user?.callsign || user?.username || 'Unknown'
+        }
+      });
+
+      // Start WebRTC group call
+      await webrtcService.startGroupCall(participantIds);
+
+      console.log('[ChatRoom] Group call started successfully');
+    } catch (error: any) {
+      console.error('[ChatRoom] Error starting group call:', error);
+      webrtcService.endGroupCall();
+
+      // Show user-friendly error message
+      if (error.message?.includes('permissions')) {
+        Alert.alert(
+          'Permission Required',
+          'VComm needs camera and microphone permissions to make calls. Please grant permissions in your device settings.',
+          [
+            {text: 'Cancel', style: 'cancel'},
+            {
+              text: 'Open Settings',
+              onPress: () => openPermissionSettings(),
+              style: 'default',
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Call Failed',
+          'Unable to start group call. Please try again.',
           [{text: 'OK', style: 'default'}]
         );
       }
@@ -643,6 +798,18 @@ export function ChatRoom({
 
   const groupedMessages = groupMessagesByDate(messages);
 
+  // Render loading indicator for pagination
+  const renderLoadingIndicator = () => {
+    if (!paginationInfo?.isLoading) return null;
+
+    return (
+      <View style={styles.loadingMoreContainer}>
+        <ActivityIndicator size="small" color="#a6c455" />
+        <Text style={styles.loadingMoreText}>LOADING MESSAGES...</Text>
+      </View>
+    );
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -718,6 +885,7 @@ export function ChatRoom({
           )}
           keyExtractor={(item) => item.date}
           contentContainerStyle={styles.messagesContent}
+          ListHeaderComponent={renderLoadingIndicator}
           onContentSizeChange={() => {
             // Only auto-scroll to end if we've already done initial positioning
             // This prevents scrolling during initial load
@@ -725,6 +893,18 @@ export function ChatRoom({
               flatListRef.current?.scrollToEnd({animated: true});
             }
           }}
+          onScroll={(event) => {
+            const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+            // Check if user scrolled to top (within 100px threshold)
+            if (contentOffset.y < 100) {
+              const paginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
+              if (paginationInfo?.hasMore && !paginationInfo?.isLoading) {
+                console.log('[ChatRoom] Near top, loading more messages...');
+                loadMessages(false, true);
+              }
+            }
+          }}
+          scrollEventThrottle={400}
         />
       )}
 
@@ -1035,6 +1215,23 @@ const styles = StyleSheet.create({
     color: '#666',
     fontSize: 11,
     marginTop: 16,
+    letterSpacing: 1,
+    fontWeight: '600',
+  },
+  loadingMoreContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#1a1a1a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#4d5d30',
+  },
+  loadingMoreText: {
+    color: '#a6c455',
+    fontSize: 10,
+    marginLeft: 8,
     letterSpacing: 1,
     fontWeight: '600',
   },

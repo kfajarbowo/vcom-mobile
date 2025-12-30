@@ -5,33 +5,55 @@ import {useCallStore} from '../store/callStore';
 import {webrtcService} from '../services/webrtcService';
 
 export function IncomingCallModal() {
-  const {status, callerName, callType, callId, offer} = useCallStore();
+  const {status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants} = useCallStore();
 
   const isVisible = status === 'ringing';
+  const participants = getAllParticipants();
 
   const handleAccept = async () => {
     try {
-      console.log('[IncomingCall] Accepting call');
+      console.log('[IncomingCall] Accepting call, isGroupCall:', isGroupCall);
 
-      if (!offer) {
-        console.error('[IncomingCall] No offer available to answer');
-        webrtcService.endCall();
-        return;
+      if (isGroupCall) {
+        // For group calls, just join the call
+        console.log('[IncomingCall] Accepting group call');
+        useCallStore.getState().setCallStatus('calling');
+
+        // Get participant IDs
+        const participantIds = participants.map(p => p.userId);
+
+        // Start group call
+        await webrtcService.startGroupCall(participantIds);
+      } else {
+        // For 1-on-1 calls, answer with the offer
+        if (!offer) {
+          console.error('[IncomingCall] No offer available to answer');
+          webrtcService.endCall();
+          return;
+        }
+
+        useCallStore.getState().setCallStatus('calling');
+
+        // Answer the call with the stored offer
+        await webrtcService.answerCall(callType, offer);
       }
-
-      useCallStore.getState().setCallStatus('calling');
-
-      // Answer the call with the stored offer
-      await webrtcService.answerCall(callType, offer);
     } catch (error) {
       console.error('[IncomingCall] Error accepting call:', error);
-      webrtcService.endCall();
+      if (isGroupCall) {
+        webrtcService.endGroupCall();
+      } else {
+        webrtcService.endCall();
+      }
     }
   };
 
   const handleReject = () => {
     console.log('[IncomingCall] Rejecting call');
-    webrtcService.endCall();
+    if (isGroupCall) {
+      webrtcService.endGroupCall();
+    } else {
+      webrtcService.endCall();
+    }
   };
 
   if (!isVisible || !callId) {
@@ -50,15 +72,24 @@ export function IncomingCallModal() {
           <View style={styles.callerInfo}>
             <View style={styles.avatarContainer}>
               <MaterialCommunityIcons
-                name="account"
+                name={isGroupCall ? 'account-group' : 'account'}
                 size={60}
                 color="#a6c455"
               />
             </View>
-            <Text style={styles.callerName}>{callerName || 'Unknown'}</Text>
-            <Text style={styles.callType}>
-              {callType === 'video' ? 'VIDEO CALL' : 'VOICE CALL'}
+            <Text style={styles.callerName}>
+              {isGroupCall ? (groupName || 'Group Call') : (callerName || 'Unknown')}
             </Text>
+            <Text style={styles.callType}>
+              {isGroupCall
+                ? `GROUP ${callType === 'video' ? 'VIDEO' : 'VOICE'} CALL`
+                : callType === 'video' ? 'VIDEO CALL' : 'VOICE CALL'}
+            </Text>
+            {isGroupCall && participants.length > 0 && (
+              <Text style={styles.participantCount}>
+                {participants.length + 1} PARTICIPANTS
+              </Text>
+            )}
             <View style={styles.statusIndicator}>
               <View style={styles.statusDot} />
               <Text style={styles.statusText}>INCOMING CALL...</Text>
@@ -138,6 +169,13 @@ const styles = StyleSheet.create({
     color: '#a6c455',
     fontWeight: 'bold',
     letterSpacing: 1.5,
+    marginBottom: 8,
+  },
+  participantCount: {
+    fontSize: 12,
+    color: '#888',
+    fontWeight: '600',
+    letterSpacing: 1,
     marginBottom: 16,
   },
   statusIndicator: {

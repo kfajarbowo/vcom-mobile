@@ -8,10 +8,6 @@ const path = require('path');
  * @type {import('metro-config').MetroConfig}
  */
 const config = {
-  watchFolders: [
-    // Watch the vcomm-shared package
-    path.resolve(__dirname, '../vcomm-shared'),
-  ],
   resolver: {
     // Add support for TypeScript files in node_modules
     sourceExts: ['js', 'jsx', 'json', 'ts', 'tsx'],
