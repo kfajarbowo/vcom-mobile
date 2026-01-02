@@ -17,6 +17,7 @@ export function ActiveCallScreen() {
     isMuted,
     isVideoEnabled,
     isSpeakerEnabled,
+    isGroupCall,
     toggleMute,
     toggleVideo,
     toggleSpeaker,
@@ -26,6 +27,16 @@ export function ActiveCallScreen() {
 
   const isVisible = status === 'calling' || status === 'active';
   const displayName = isIncoming ? callerName : receiverName;
+
+  // Debug: Log stream status
+  useEffect(() => {
+    console.log('[ActiveCallScreen] Stream status:', {
+      hasLocalStream: !!localStream,
+      hasRemoteStream: !!remoteStream,
+      callType,
+      isVideoEnabled,
+    });
+  }, [localStream, remoteStream, callType, isVideoEnabled]);
 
   // Call duration timer
   useEffect(() => {
@@ -47,7 +58,12 @@ export function ActiveCallScreen() {
   };
 
   const handleEndCall = () => {
-    webrtcService.endCall();
+    // Call the appropriate end method based on call type
+    if (isGroupCall) {
+      webrtcService.endGroupCall();
+    } else {
+      webrtcService.endCall();
+    }
   };
 
   if (!isVisible) {
@@ -99,14 +115,26 @@ export function ActiveCallScreen() {
         </View>
 
         {/* Local Video (for video calls) */}
-        {callType === 'video' && localStream && (
-          <View style={styles.localVideoContainer}>
-            <RTCView
-              streamURL={localStream.toURL()}
-              style={styles.localVideo}
-              objectFit="cover"
-              mirror={true}
-            />
+        {callType === 'video' && (
+          <View style={styles.localVideoContainer} pointerEvents="box-none">
+            {localStream ? (
+              <RTCView
+                key={`local-${localStream.id}`}
+                streamURL={localStream.toURL()}
+                style={styles.localVideo}
+                objectFit="cover"
+                mirror={true}
+                zOrder={1}
+              />
+            ) : (
+              <View style={styles.localVideoPlaceholder}>
+                <MaterialCommunityIcons
+                  name="account"
+                  size={60}
+                  color="#4d5d30"
+                />
+              </View>
+            )}
           </View>
         )}
 
@@ -236,10 +264,19 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#4d5d30',
     overflow: 'hidden',
+    zIndex: 10,
+    elevation: 10, // For Android shadow and z-index
   },
   localVideo: {
     width: '100%',
     height: '100%',
+  },
+  localVideoPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   controls: {
     flexDirection: 'row',

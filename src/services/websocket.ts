@@ -1,6 +1,7 @@
 import {getApiBaseUrl, getSessionToken} from './apiClient';
 import {useChatStore} from '../store/chatStore';
 
+
 export type WebSocketMessage = {
   type:
     | 'new_message'
@@ -42,6 +43,7 @@ class WebSocketService {
   private reconnectDelay = 3000; // 3 seconds between attempts
   private messageHandlers: Set<MessageHandler> = new Set();
   private isConnecting = false;
+  private isAuthenticated = false;
 
   async connect(userId?: number): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
@@ -81,6 +83,11 @@ class WebSocketService {
             type: 'auth',
             payload: {userId: authUserId},
           });
+          // Give server time to process auth (500ms should be enough)
+          setTimeout(() => {
+            this.isAuthenticated = true;
+            console.log('[WebSocket] ✅ Authentication complete');
+          }, 500);
         } else {
           console.warn('[WebSocket] ⚠️ No user ID available for authentication');
         }
@@ -118,6 +125,7 @@ class WebSocketService {
           wasClean: event.wasClean,
         });
         this.isConnecting = false;
+        this.isAuthenticated = false;
         useChatStore.getState().setConnected(false);
         this.ws = null;
 
@@ -169,6 +177,7 @@ class WebSocketService {
       this.ws = null;
     }
 
+    this.isAuthenticated = false;
     useChatStore.getState().setConnected(false);
     this.reconnectAttempts = 0;
   }
@@ -202,13 +211,31 @@ class WebSocketService {
       case 'new_message': {
         const {conversationId, ...messageData} = message.payload;
         if (conversationId) {
+          // Get current user ID
+          const {useAuthStore} = await import('../store/authStore');
+          const currentUserId = useAuthStore.getState().user?.id;
+
+          // Check if message is from another user
+          const isOwnMessage = messageData.senderId === currentUserId;
+
+          // Check if user is currently viewing this conversation
+          const isViewingConversation = chatStore.currentConversationId === conversationId;
+
+          console.log('[WebSocket] New message:', {
+            conversationId,
+            senderId: messageData.senderId,
+            currentUserId,
+            isOwnMessage,
+            isViewingConversation
+          });
+
           // Check if conversation exists in the store
-          const conversationExists = chatStore.conversations.some(
+          const existingConversation = chatStore.conversations.find(
             (conv) => conv.id === conversationId
           );
 
           // If conversation doesn't exist, fetch it from the API and add to store
-          if (!conversationExists) {
+          if (!existingConversation) {
             console.log('[WebSocket] New conversation detected, fetching details...');
             try {
               const {apiRequest} = await import('./apiClient');
@@ -221,7 +248,7 @@ class WebSocketService {
                   isGroup: conversationData.isGroup || false,
                   lastMessage: messageData.content,
                   lastMessageTime: messageData.timestamp || new Date().toISOString(),
-                  unreadCount: 1,
+                  unreadCount: isOwnMessage ? 0 : 1,
                   members: conversationData.memberCount || 2,
                   otherUserId: conversationData.otherUserId,
                 });
@@ -231,10 +258,25 @@ class WebSocketService {
               console.error('[WebSocket] ❌ Error fetching conversation details:', error);
             }
           } else {
-            // Conversation exists, update it normally
+            // Conversation exists, update it
+            const currentUnreadCount = existingConversation.unreadCount || 0;
+
+            // Increment unread count if:
+            // - Message is not from current user
+            // - User is not currently viewing this conversation
+            const shouldIncrementUnread = !isOwnMessage && !isViewingConversation;
+            const newUnreadCount = shouldIncrementUnread ? currentUnreadCount + 1 : currentUnreadCount;
+
+            console.log('[WebSocket] Updating conversation unread count:', {
+              current: currentUnreadCount,
+              new: newUnreadCount,
+              shouldIncrement: shouldIncrementUnread
+            });
+
             chatStore.updateConversation(conversationId, {
               lastMessage: messageData.content,
               lastMessageTime: messageData.timestamp || new Date().toISOString(),
+              unreadCount: newUnreadCount,
             });
           }
 
@@ -305,6 +347,22 @@ class WebSocketService {
 
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  isReady(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN && this.isAuthenticated;
+  }
+
+  async waitForReady(timeoutMs: number = 3000): Promise<boolean> {
+    const startTime = Date.now();
+    while (!this.isReady()) {
+      if (Date.now() - startTime > timeoutMs) {
+        console.warn('[WebSocket] Timeout waiting for ready state');
+        return false;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return true;
   }
 }
 

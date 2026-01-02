@@ -2,7 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, Dimensions} from 'react-native';
 import {RTCView} from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useCallStore} from '../store/callStore';
+import {Participant, useCallStore} from '../store/callStore';
 import {webrtcService} from '../services/webrtcService';
 
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
@@ -133,7 +133,7 @@ export function GroupCallScreen() {
         <ScrollView
           style={styles.participantsContainer}
           contentContainerStyle={styles.participantsGrid}>
-          {participants.map((participant, index) =>
+          {participants.map((participant: Participant, index: any) =>
             renderParticipantTile(participant, index)
           )}
         </ScrollView>

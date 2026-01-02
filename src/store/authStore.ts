@@ -7,7 +7,7 @@ interface User {
   email?: string;
   callsign?: string;
   fullName?: string;
-  role: string;
+  role?: string;
 }
 
 interface AuthState {

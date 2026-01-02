@@ -3,7 +3,7 @@ import {View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, ActivityI
 import {useForm, Controller} from 'react-hook-form';
 import {zodResolver} from '@hookform/resolvers/zod';
 import {z} from 'zod';
-import type {NativeStackScreenProps} from '@react-native-stack-navigator';
+import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {Picker} from '@react-native-picker/picker';
 import {Button, Input} from '../../components/ui';
 import {authService} from '../../services/authService';
