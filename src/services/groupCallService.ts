@@ -266,9 +266,16 @@ export class GroupCallService {
         return;
       }
 
-      // Add local stream to peer connection
+      // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC Group] Adding local tracks to peer connection for:', participantUserId);
-      localStream.getTracks().forEach((track) => {
+
+      // Add audio tracks first
+      localStream.getAudioTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      // Then add video tracks
+      localStream.getVideoTracks().forEach((track) => {
         peerConnection.addTrack(track, localStream);
       });
 
@@ -358,9 +365,16 @@ export class GroupCallService {
         return;
       }
 
-      // Add local stream to peer connection
+      // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC Group] Adding local tracks to peer connection for:', fromUserId);
-      localStream.getTracks().forEach((track) => {
+
+      // Add audio tracks first
+      localStream.getAudioTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      // Then add video tracks
+      localStream.getVideoTracks().forEach((track) => {
         peerConnection.addTrack(track, localStream);
       });
 

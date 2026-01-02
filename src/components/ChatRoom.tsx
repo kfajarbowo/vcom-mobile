@@ -41,6 +41,24 @@ export function ChatRoom({
 }: ChatRoomProps) {
   const {user} = useAuthStore();
   const setMessages = useChatStore((state) => state.setMessages);
+
+  // Subscribe to call state to check for active group calls
+  const callState = useCallStore((state) => ({
+    status: state.status,
+    isGroupCall: state.isGroupCall,
+    conversationId: state.conversationId,
+  }));
+
+  // Debug: Log call state to see if rejoin button should show
+  console.log('[ChatRoom] Call State Check:', {
+    isGroup,
+    conversationId,
+    callStatus: callState.status,
+    callIsGroupCall: callState.isGroupCall,
+    callConversationId: callState.conversationId,
+    shouldShowRejoin: isGroup && callState.status === 'active' && callState.isGroupCall && callState.conversationId === conversationId
+  });
+
   const [messageText, setMessageText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
@@ -100,7 +118,7 @@ export function ChatRoom({
     }
   }, [isLoading, messages.length, user?.id]);
 
-  // Load conversation members (for determining call recipient)
+  // Load conversation members (for determining call recipient and sender names)
   useEffect(() => {
     const loadMembers = async () => {
       try {
@@ -112,9 +130,14 @@ export function ChatRoom({
         console.log('[ChatRoom] Current user ID:', user?.id);
 
         if (Array.isArray(members)) {
+          console.log('[ChatRoom] ===== CONVERSATION MEMBERS =====');
           members.forEach((member: any, index: number) => {
             console.log(`[ChatRoom] Member ${index}:`, JSON.stringify(member, null, 2));
+            console.log(`[ChatRoom] Member ${index} userId:`, member.userId);
+            console.log(`[ChatRoom] Member ${index} callsign:`, member.callsign);
+            console.log(`[ChatRoom] Member ${index} fullName:`, member.fullName);
           });
+          console.log('[ChatRoom] =====================================');
           setConversationMembers(members);
         } else {
           console.error('[ChatRoom] Members is not an array:', typeof members);
@@ -130,7 +153,11 @@ export function ChatRoom({
   useEffect(() => {
     useChatStore.getState().setCurrentConversationId(conversationId);
     hasScrolledToInitialPosition.current = false; // Reset scroll flag for new conversation
-    loadMessages(true);
+
+    // Only load messages after conversationMembers are loaded
+    if (conversationMembers && conversationMembers.length > 0) {
+      loadMessages(true);
+    }
 
     console.log('[ChatRoom] Setting up WebSocket handler for conversation:', conversationId);
 
@@ -158,7 +185,7 @@ export function ChatRoom({
       removeHandler();
       useChatStore.getState().setCurrentConversationId(null);
     };
-  }, [conversationId]);
+  }, [conversationId, conversationMembers]);
 
   const loadMessages = async (showLoading: boolean = false, loadMore: boolean = false) => {
     try {
@@ -235,11 +262,40 @@ export function ChatRoom({
 
       console.log('[ChatRoom] Received messages:', data?.length || 0, 'total:', total, 'hasMore:', hasMore);
 
-      const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any) => {
+      const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any, index: number) => {
+        // Look up sender name from conversationMembers
+        let senderName = 'Unknown';
+
+        if (index === 0) {
+          console.log('[ChatRoom] ===== SENDER LOOKUP DEBUG =====');
+          console.log('[ChatRoom] conversationMembers available:', !!conversationMembers);
+          console.log('[ChatRoom] conversationMembers length:', conversationMembers?.length);
+          console.log('[ChatRoom] First message senderId:', msg.senderId, 'type:', typeof msg.senderId);
+          console.log('[ChatRoom] conversationMembers:', JSON.stringify(conversationMembers, null, 2));
+        }
+
+        if (conversationMembers && Array.isArray(conversationMembers)) {
+          const member = conversationMembers.find(m => m.userId === msg.senderId);
+          if (index === 0) {
+            console.log('[ChatRoom] Found member for senderId', msg.senderId, ':', !!member);
+            if (member) {
+              console.log('[ChatRoom] Member data:', JSON.stringify(member, null, 2));
+            }
+          }
+          if (member) {
+            senderName = member.callsign || member.fullName || 'Unknown';
+          }
+        }
+
+        if (index === 0) {
+          console.log('[ChatRoom] Final senderName:', senderName);
+          console.log('[ChatRoom] ==============================');
+        }
+
         return {
           id: msg.id,
           senderId: msg.senderId,
-          senderName: msg.senderName || 'Unknown',
+          senderName: senderName,
           content: msg.content,
           timestamp: msg.timestamp || msg.createdAt,
           isRead: msg.isRead || false,
@@ -277,6 +333,12 @@ export function ChatRoom({
         await apiRequest(`/api/conversations/${conversationId}/mark-read`, {
           method: 'POST',
         }).catch(err => console.warn('[ChatRoom] Mark read failed:', err));
+
+        // Reset unread count in local store
+        useChatStore.getState().updateConversation(conversationId, {
+          unreadCount: 0,
+        });
+        console.log('[ChatRoom] Reset unread count to 0 for conversation:', conversationId);
 
         // Scroll to end after initial load
         setTimeout(() => {
@@ -447,6 +509,20 @@ export function ChatRoom({
       console.log('[ChatRoom] isGroup:', isGroup);
       console.log('[ChatRoom] conversationMembers:', conversationMembers);
 
+      // Wait for WebSocket to be fully ready (connected and authenticated)
+      console.log('[ChatRoom] Checking WebSocket connection...');
+      const isReady = await websocketService.waitForReady(3000);
+      if (!isReady) {
+        console.error('[ChatRoom] WebSocket not ready for calls');
+        Alert.alert(
+          'Connection Not Ready',
+          'Please wait a moment for the connection to establish, then try again.',
+          [{text: 'OK', style: 'default'}]
+        );
+        return;
+      }
+      console.log('[ChatRoom] WebSocket ready, proceeding with call');
+
       // For group calls, use group call handling
       if (isGroup) {
         return handleStartGroupCall(callType);
@@ -536,6 +612,20 @@ export function ChatRoom({
   const handleStartGroupCall = async (callType: 'audio' | 'video') => {
     try {
       console.log('[ChatRoom] Starting group call:', callType);
+
+      // Wait for WebSocket to be fully ready (connected and authenticated)
+      console.log('[ChatRoom] Checking WebSocket connection for group call...');
+      const isReady = await websocketService.waitForReady(3000);
+      if (!isReady) {
+        console.error('[ChatRoom] WebSocket not ready for group calls');
+        Alert.alert(
+          'Connection Not Ready',
+          'Please wait a moment for the connection to establish, then try again.',
+          [{text: 'OK', style: 'default'}]
+        );
+        return;
+      }
+      console.log('[ChatRoom] WebSocket ready, proceeding with group call');
 
       // Get all participant IDs (excluding current user)
       const participantIds = conversationMembers
@@ -842,24 +932,43 @@ export function ChatRoom({
         </View>
 
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.callButton}
-            onPress={() => handleStartCall('video')}>
-            <MaterialCommunityIcons
-              name="video"
-              size={18}
-              color="#a6c455"
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.callButton}
-            onPress={() => handleStartCall('audio')}>
-            <MaterialCommunityIcons
-              name="phone"
-              size={18}
-              color="#a6c455"
-            />
-          </TouchableOpacity>
+          {/* Show Rejoin button if there's an active group call for this conversation */}
+          {isGroup &&
+           callState.status === 'active' &&
+           callState.isGroupCall &&
+           callState.conversationId === conversationId ? (
+            <TouchableOpacity
+              style={styles.rejoinButton}
+              onPress={() => handleStartCall('video')}>
+              <MaterialCommunityIcons
+                name="phone-plus"
+                size={18}
+                color="#ffffff"
+              />
+              <Text style={styles.rejoinButtonText}>Rejoin</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.callButton}
+                onPress={() => handleStartCall('video')}>
+                <MaterialCommunityIcons
+                  name="video"
+                  size={18}
+                  color="#a6c455"
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.callButton}
+                onPress={() => handleStartCall('audio')}>
+                <MaterialCommunityIcons
+                  name="phone"
+                  size={18}
+                  color="#a6c455"
+                />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
 
@@ -876,8 +985,8 @@ export function ChatRoom({
           renderItem={({item: group}) => (
             <View>
               {renderDateSeparator(group.date)}
-              {group.messages.map((message: Message) => (
-                <React.Fragment key={message.id}>
+              {group.messages.map((message: Message, index: number) => (
+                <React.Fragment key={`${message.id}-${index}`}>
                   {renderMessage({item: message})}
                 </React.Fragment>
               ))}
@@ -1322,6 +1431,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: '#4d5d30',
+  },
+  rejoinButton: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#a6c455',
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rejoinButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   messagesContent: {
     padding: 16,

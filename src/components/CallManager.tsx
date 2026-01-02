@@ -3,6 +3,7 @@ import {websocketService, WebSocketMessage} from '../services/websocket';
 import {webrtcService} from '../services/webrtcService';
 import {useCallStore} from '../store/callStore';
 import {useAuthStore} from '../store/authStore';
+import {useToast} from './Toast';
 
 /**
  * CallManager - Handles WebRTC signaling coordination
@@ -10,6 +11,7 @@ import {useAuthStore} from '../store/authStore';
  */
 export function CallManager() {
   const {user} = useAuthStore();
+  const toast = useToast();
 
   useEffect(() => {
     console.log('[CallManager] Setting up WebRTC signaling handlers');
@@ -90,6 +92,15 @@ export function CallManager() {
               // The actual answer will be sent when user clicks accept
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring offer');
+              // Send busy signal back to caller
+              websocketService.send({
+                type: 'reject_call',
+                payload: {
+                  callId,
+                  toUserId: callerUserId,
+                  reason: 'busy'
+                }
+              });
             }
             break;
           }
@@ -104,8 +115,10 @@ export function CallManager() {
             const {answer} = payload as any;
             console.log('[CallManager] Extracted answer:', answer);
 
-            if (callStore.status === 'calling') {
-              console.log('[CallManager] ✅ Status is calling, processing answer');
+            // Process answer if call is in calling or active state
+            // (active state can happen if call_accepted arrives before webrtc_answer)
+            if (callStore.status === 'calling' || callStore.status === 'active') {
+              console.log('[CallManager] ✅ Processing WebRTC answer');
               await webrtcService.handleAnswer(answer);
             } else {
               console.warn('[CallManager] ⚠️ Not processing answer - status is:', callStore.status);
@@ -151,6 +164,21 @@ export function CallManager() {
 
           case 'call_rejected': {
             console.log('[CallManager] Call rejected by remote peer');
+            toast.show('Call was declined', 'info');
+            webrtcService.endCall();
+            break;
+          }
+
+          case 'call_failed': {
+            console.log('[CallManager] Call failed');
+            const payload = message.payload || message;
+            const {reason, message: errorMessage} = payload as any;
+
+            if (reason === 'user_busy') {
+              toast.show(errorMessage || 'User is currently on another call', 'warning');
+            } else {
+              toast.show(errorMessage || 'Call failed', 'error');
+            }
             webrtcService.endCall();
             break;
           }
@@ -232,6 +260,16 @@ export function CallManager() {
               }]);
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
+              // Send rejection signal for group call
+              websocketService.send({
+                type: 'reject_group_call',
+                payload: {
+                  callId,
+                  groupId,
+                  fromUserId: currentUser?.id,
+                  userName: currentUser?.callsign || currentUser?.full_name
+                }
+              });
             }
             break;
           }

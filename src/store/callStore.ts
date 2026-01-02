@@ -152,7 +152,7 @@ export const useCallStore: any = create<CallState>((set) => ({
     set((state) => {
       if (state.localStream) {
         state.localStream.getAudioTracks().forEach((track) => {
-          track.enabled = state.isMuted;
+          track.enabled = !state.isMuted; // Fixed: Added negation to match toggleVideo logic
         });
       }
       return {isMuted: !state.isMuted};

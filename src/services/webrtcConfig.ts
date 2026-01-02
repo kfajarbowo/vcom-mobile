@@ -8,11 +8,30 @@ import {CallType} from '../store/callStore';
 // ICE server configuration
 export const ICE_SERVERS = {
   iceServers: [
+    // Google's public STUN servers
     {
-      urls: 'stun:192.168.100.79:3478',
+      urls: 'stun:stun.l.google.com:19302',
     },
     {
+      urls: 'stun:stun1.l.google.com:19302',
+    },
+    {
+      urls: 'stun:stun2.l.google.com:19302',
+    },
+    // Local TURN server (coturn) - use local network IP for real devices
+    {
       urls: 'turn:192.168.100.79:3478',
+      username: 'test',
+      credential: 'test123',
+    },
+    // Also try UDP and TCP
+    {
+      urls: 'turn:192.168.100.79:3478?transport=udp',
+      username: 'test',
+      credential: 'test123',
+    },
+    {
+      urls: 'turn:192.168.100.79:3478?transport=tcp',
       username: 'test',
       credential: 'test123',
     },

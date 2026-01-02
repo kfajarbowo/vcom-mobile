@@ -20,6 +20,7 @@ import {ICE_SERVERS, getMediaConstraints, getInCallManagerOptions} from './webrt
 export class OneOnOneCallService {
   private peerConnection: any = null;
   private pendingIceCandidates: RTCIceCandidate[] = [];
+  private isInitializing: boolean = false;
 
   // Initialize peer connection
   async initializePeerConnection(): Promise<void> {
@@ -28,11 +29,40 @@ export class OneOnOneCallService {
     // Clean up any existing peer connection first
     if (this.peerConnection) {
       console.log('[WebRTC 1:1] Cleaning up existing peer connection before creating new one');
+
+      try {
+        // Remove all senders first
+        const senders = this.peerConnection.getSenders();
+        senders.forEach((sender: any) => {
+          if (sender.track) {
+            sender.track.stop();
+            this.peerConnection?.removeTrack(sender);
+          }
+        });
+      } catch (error) {
+        console.log('[WebRTC 1:1] Error removing senders:', error);
+      }
+
+      // Explicitly close peer connection and wait for TURN deallocation
+      console.log('[WebRTC 1:1] Closing peer connection and releasing TURN allocation...');
       this.peerConnection.close();
+
+      // Set to null immediately to prevent reuse
+      const oldConnection = this.peerConnection;
       this.peerConnection = null;
+
+      // Wait longer for TURN server to process deallocation (coturn needs time)
+      console.log('[WebRTC 1:1] Waiting for TURN deallocation to complete...');
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Increased from 500ms to 1000ms
+      console.log('[WebRTC 1:1] Cleanup complete, ready for new peer connection');
     }
 
+    // Clear pending ICE candidates from previous connection
+    this.pendingIceCandidates = [];
+    console.log('[WebRTC 1:1] Cleared pending ICE candidates');
+
     this.peerConnection = new RTCPeerConnection(ICE_SERVERS);
+    console.log('[WebRTC 1:1] Created fresh peer connection');
 
     // Handle ICE candidates
     (this.peerConnection as any).onicecandidate = (event: any) => {
@@ -74,21 +104,40 @@ export class OneOnOneCallService {
 
     // Listen to ICE connection state
     (this.peerConnection as any).oniceconnectionstatechange = () => {
-      console.log('[WebRTC 1:1] ICE connection state:', this.peerConnection?.iceConnectionState);
-      if (this.peerConnection?.iceConnectionState === 'connected' ||
-          this.peerConnection?.iceConnectionState === 'completed') {
+      const state = this.peerConnection?.iceConnectionState;
+      const signalingState = this.peerConnection?.signalingState;
+      console.log('[WebRTC 1:1] 🔄 ICE state changed:', state, '| Signaling:', signalingState);
+
+      if (state === 'connected' || state === 'completed') {
         console.log('[WebRTC 1:1] ✅ ICE connected! Setting status to active');
         useCallStore.getState().setCallStatus('active');
-      } else if (this.peerConnection?.iceConnectionState === 'failed') {
-        console.log('[WebRTC 1:1] ❌ ICE connection failed');
+      } else if (state === 'failed') {
+        console.log('[WebRTC 1:1] ❌ ICE connection failed - check TURN server');
         this.endCall();
+      } else if (state === 'disconnected') {
+        console.log('[WebRTC 1:1] ⚠️ ICE disconnected - connection lost');
+      } else if (state === 'checking') {
+        console.log('[WebRTC 1:1] 🔍 ICE checking - gathering candidates...');
       }
+    };
+
+    // Listen to ICE gathering state
+    (this.peerConnection as any).onicegatheringstatechange = () => {
+      console.log('[WebRTC 1:1] 📡 ICE gathering state:', this.peerConnection?.iceGatheringState);
+    };
+
+    // Listen to signaling state
+    (this.peerConnection as any).onsignalingstatechange = () => {
+      console.log('[WebRTC 1:1] 📶 Signaling state:', this.peerConnection?.signalingState);
     };
   }
 
   // Get user media (camera/microphone)
   async getUserMedia(callType: CallType): Promise<MediaStream> {
     console.log('[WebRTC 1:1] Getting user media:', callType);
+
+    // Longer delay to ensure previous stream cleanup is complete on mobile
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     // Request permissions first
     const hasPermissions = callType === 'video'
@@ -128,8 +177,26 @@ export class OneOnOneCallService {
 
   // Start outgoing call
   async startCall(callType: CallType): Promise<void> {
+    // Prevent concurrent call initialization
+    if (this.isInitializing) {
+      console.warn('[WebRTC 1:1] ⚠️ Call already initializing, ignoring duplicate request');
+      return;
+    }
+
+    this.isInitializing = true;
+
     try {
       console.log('[WebRTC 1:1] Starting call:', callType);
+
+      // Clear any lingering state from previous calls
+      const currentState = useCallStore.getState();
+      if (currentState.localStream || currentState.remoteStream) {
+        console.log('[WebRTC 1:1] Cleaning up lingering streams from previous call');
+        currentState.localStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        currentState.remoteStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        useCallStore.getState().setLocalStream(null);
+        useCallStore.getState().setRemoteStream(null);
+      }
 
       // Start audio session with speaker enabled
       const options = getInCallManagerOptions(callType);
@@ -143,10 +210,18 @@ export class OneOnOneCallService {
       // Get user media
       const stream = await this.getUserMedia(callType);
 
-      // Add local stream to peer connection
+      // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC 1:1] Adding tracks to peer connection');
-      stream.getTracks().forEach((track) => {
-        console.log('[WebRTC 1:1] Adding track:', track.kind, 'enabled:', track.enabled);
+
+      // Add audio tracks first
+      stream.getAudioTracks().forEach((track) => {
+        console.log('[WebRTC 1:1] Adding audio track, enabled:', track.enabled);
+        this.peerConnection?.addTrack(track, stream);
+      });
+
+      // Then add video tracks
+      stream.getVideoTracks().forEach((track) => {
+        console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
 
@@ -183,6 +258,7 @@ export class OneOnOneCallService {
         type: 'webrtc_offer',
         payload: {
           callId: callState.callId,
+          toUserId: callState.receiverUserId,  // Add target user ID
           offer: {
             type: offer.type,
             sdp: offer.sdp,
@@ -199,13 +275,33 @@ export class OneOnOneCallService {
       console.error('[WebRTC 1:1] Error starting call:', error);
       this.endCall();
       throw error;
+    } finally {
+      this.isInitializing = false;
     }
   }
 
   // Answer incoming call
   async answerCall(callType: CallType, offer: RTCSessionDescription): Promise<void> {
+    // Prevent concurrent call initialization
+    if (this.isInitializing) {
+      console.warn('[WebRTC 1:1] ⚠️ Call already initializing, ignoring duplicate answer request');
+      return;
+    }
+
+    this.isInitializing = true;
+
     try {
       console.log('[WebRTC 1:1] Answering call:', callType);
+
+      // Clear any lingering state from previous calls
+      const currentState = useCallStore.getState();
+      if (currentState.localStream || currentState.remoteStream) {
+        console.log('[WebRTC 1:1] Cleaning up lingering streams from previous call');
+        currentState.localStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        currentState.remoteStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        useCallStore.getState().setLocalStream(null);
+        useCallStore.getState().setRemoteStream(null);
+      }
 
       // Start audio session with speaker enabled
       const options = getInCallManagerOptions(callType);
@@ -219,10 +315,18 @@ export class OneOnOneCallService {
       // Get user media
       const stream = await this.getUserMedia(callType);
 
-      // Add local stream to peer connection
+      // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC 1:1] Adding tracks to peer connection');
-      stream.getTracks().forEach((track) => {
-        console.log('[WebRTC 1:1] Adding track:', track.kind, 'enabled:', track.enabled);
+
+      // Add audio tracks first
+      stream.getAudioTracks().forEach((track) => {
+        console.log('[WebRTC 1:1] Adding audio track, enabled:', track.enabled);
+        this.peerConnection?.addTrack(track, stream);
+      });
+
+      // Then add video tracks
+      stream.getVideoTracks().forEach((track) => {
+        console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
 
@@ -234,18 +338,33 @@ export class OneOnOneCallService {
       await this.peerConnection!.setLocalDescription(answer);
       console.log('[WebRTC 1:1] Created answer');
 
-      // Send answer via WebSocket
+      // Get call state
       const callState = useCallStore.getState();
+      const {user} = useAuthStore.getState();
+
+      // Send accept_call message to server to notify the caller
+      websocketService.send({
+        type: 'accept_call',
+        payload: {
+          callId: callState.callId,
+          toUserId: callState.callerUserId,
+        },
+      });
+      console.log('[WebRTC 1:1] Sent accept_call to caller:', callState.callerUserId);
+
+      // Send answer via WebSocket
       websocketService.send({
         type: 'webrtc_answer',
         payload: {
           callId: callState.callId,
+          toUserId: callState.callerUserId,  // Send answer back to the caller
           answer: {
             type: answer.type,
             sdp: answer.sdp,
           },
         },
       });
+      console.log('[WebRTC 1:1] Sent webrtc_answer to caller:', callState.callerUserId);
 
       // Add any pending ICE candidates
       this.addPendingIceCandidates();
@@ -253,6 +372,8 @@ export class OneOnOneCallService {
       console.error('[WebRTC 1:1] Error answering call:', error);
       this.endCall();
       throw error;
+    } finally {
+      this.isInitializing = false;
     }
   }
 
@@ -318,14 +439,21 @@ export class OneOnOneCallService {
     // Notify server about rejection
     const callState = useCallStore.getState();
     if (callState.callId) {
-      websocketService.send({
-        type: 'reject_call',
-        payload: {
-          callId: callState.callId,
-          toUserId: callState.receiverUserId,
-        },
-      });
-      console.log('[WebRTC 1:1] Sent reject_call to user', callState.receiverUserId);
+      // When rejecting, we're the receiver, so notify the caller
+      const otherUserId = callState.callerUserId;
+
+      if (otherUserId) {
+        websocketService.send({
+          type: 'reject_call',
+          payload: {
+            callId: callState.callId,
+            toUserId: otherUserId,
+          },
+        });
+        console.log('[WebRTC 1:1] Sent reject_call to caller', otherUserId);
+      } else {
+        console.warn('[WebRTC 1:1] Could not determine caller to notify about rejection');
+      }
     }
 
     // Update call store
@@ -339,6 +467,24 @@ export class OneOnOneCallService {
     // Stop audio session
     InCallManager.stop();
     console.log('[WebRTC 1:1] Audio session stopped');
+
+    // Remove tracks from peer connection first
+    if (this.peerConnection) {
+      console.log('[WebRTC 1:1] Removing all tracks from peer connection');
+      try {
+        const senders = this.peerConnection.getSenders();
+        senders.forEach((sender: any) => {
+          if (sender.track) {
+            const trackKind = sender.track.kind;
+            sender.track.stop();
+            this.peerConnection?.removeTrack(sender);
+            console.log('[WebRTC 1:1] Removed and stopped track from peer connection:', trackKind);
+          }
+        });
+      } catch (error) {
+        console.log('[WebRTC 1:1] Error removing tracks (may be already removed):', error);
+      }
+    }
 
     // Stop all local tracks
     const localStream = useCallStore.getState().localStream;
@@ -370,18 +516,30 @@ export class OneOnOneCallService {
     // Notify server
     const callState = useCallStore.getState();
     if (callState.callId) {
-      websocketService.send({
-        type: 'end_call',
-        payload: {
-          callId: callState.callId,
-          toUserId: callState.receiverUserId,
-        },
-      });
-      console.log('[WebRTC 1:1] Sent end_call to user', callState.receiverUserId);
+      // Determine who to notify based on whether this is incoming or outgoing call
+      const otherUserId = callState.isIncoming
+        ? callState.callerUserId
+        : callState.receiverUserId;
+
+      if (otherUserId) {
+        websocketService.send({
+          type: 'end_call',
+          payload: {
+            callId: callState.callId,
+            toUserId: otherUserId,
+          },
+        });
+        console.log('[WebRTC 1:1] Sent end_call to user', otherUserId);
+      } else {
+        console.warn('[WebRTC 1:1] Could not determine other user to notify about call end');
+      }
     }
 
     // Update call store
     useCallStore.getState().endCall();
+
+    // Reset initialization flag
+    this.isInitializing = false;
   }
 }
 
