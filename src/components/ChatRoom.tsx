@@ -78,6 +78,8 @@ export function ChatRoom({
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
+  const [infoModalVisible, setInfoModalVisible] = useState(false);
+  const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
 
@@ -931,14 +933,12 @@ export function ChatRoom({
           <Text style={styles.messageText}>{content}</Text>
 
           <View style={styles.messageFooter}>
-            {item.classification && (
-              <View style={styles.classificationBadge}>
-                <Text style={styles.classificationText}>
-                  {item.classification}
-                </Text>
-              </View>
-            )}
             <Text style={styles.messageTime}>{formatTime(item.timestamp || '')}</Text>
+            {isOwnMessage && (
+              <Text style={styles.messageStatus}>
+                {item.isRead ? 'READ' : item.id ? 'SENT' : 'PENDING'}
+              </Text>
+            )}
           </View>
         </View>
 
@@ -1011,7 +1011,10 @@ export function ChatRoom({
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
 
-        <View style={styles.headerCenter}>
+        <TouchableOpacity
+          style={styles.headerCenter}
+          onPress={() => setInfoModalVisible(true)}
+          activeOpacity={0.7}>
           <View style={[styles.headerAvatar, isGroup ? styles.groupAvatar : styles.directAvatar]}>
             <Text style={styles.headerAvatarText}>
               {displayName.substring(0, 2).toUpperCase()}
@@ -1029,7 +1032,7 @@ export function ChatRoom({
               </Text>
             </View>
           </View>
-        </View>
+        </TouchableOpacity>
 
         <View style={styles.headerActions}>
           {/* Show Rejoin button if there's an active group call for this conversation */}
@@ -1464,6 +1467,184 @@ export function ChatRoom({
           setSelectedVideo(null);
         }}
       />
+
+      {/* Info Modal - Group Members or User Profile */}
+      <Modal
+        visible={infoModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setInfoModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.infoDialog}>
+            {/* Header */}
+            <View style={styles.infoHeader}>
+              <Text style={styles.infoTitle}>
+                {isGroup ? (selectedMemberProfile ? 'MEMBER PROFILE' : 'GROUP MEMBERS') : 'USER PROFILE'}
+              </Text>
+              <TouchableOpacity onPress={() => {
+                setInfoModalVisible(false);
+                setSelectedMemberProfile(null);
+              }}>
+                <MaterialCommunityIcons name="close" size={24} color="#a6c455" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Content */}
+            {isGroup ? (
+              selectedMemberProfile ? (
+                /* Member Profile View */
+                <View style={styles.infoContent}>
+                  <TouchableOpacity
+                    style={styles.backToListButton}
+                    onPress={() => setSelectedMemberProfile(null)}>
+                    <MaterialCommunityIcons name="arrow-left" size={20} color="#a6c455" />
+                    <Text style={styles.backToListText}>BACK TO MEMBERS</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.profileContainer}>
+                    <View style={[styles.profileAvatar, styles.directAvatar]}>
+                      <Text style={styles.profileAvatarText}>
+                        {(selectedMemberProfile.callsign || selectedMemberProfile.fullName || 'U').substring(0, 2).toUpperCase()}
+                      </Text>
+                    </View>
+
+                    <View style={styles.profileInfo}>
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="account" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>CALLSIGN</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.callsign || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="card-account-details" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>FULL NAME</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.fullName || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>RANK</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.rank || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="army" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>BRANCH</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.branch || 'Not set'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                /* Group Members List */
+                <View style={styles.infoContent}>
+                  <View style={styles.infoItem}>
+                    <MaterialCommunityIcons name="account-group" size={20} color="#a6c455" />
+                    <Text style={styles.infoLabel}>
+                      {conversationMembers.length} MEMBERS
+                    </Text>
+                  </View>
+
+                  <FlatList
+                    data={conversationMembers}
+                    keyExtractor={(item) => String(item.userId)}
+                    renderItem={({item}) => (
+                      <TouchableOpacity
+                        style={styles.memberItem}
+                        onPress={() => setSelectedMemberProfile(item)}
+                        activeOpacity={0.7}>
+                        <View style={[styles.memberAvatar, styles.directAvatar]}>
+                          <Text style={styles.memberAvatarText}>
+                            {(item.callsign || item.fullName || 'U').substring(0, 2).toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={styles.memberInfo}>
+                          <Text style={styles.memberName}>
+                            {item.callsign || item.fullName || 'Unknown User'}
+                            {item.userId === user?.id && ' (YOU)'}
+                          </Text>
+                          <Text style={styles.memberUsername}>
+                            {item.rank || 'No Rank'} • {item.branch || 'No Branch'}
+                          </Text>
+                        </View>
+                        <MaterialCommunityIcons name="chevron-right" size={20} color="#666" />
+                      </TouchableOpacity>
+                    )}
+                    style={styles.membersList}
+                  />
+                </View>
+              )
+            ) : (
+              /* User Profile for Direct Chat */
+              <View style={styles.infoContent}>
+                {conversationMembers
+                  .filter((member: any) => member.userId !== user?.id)
+                  .map((otherUser: any) => (
+                    <View key={otherUser.userId} style={styles.profileContainer}>
+                      <View style={[styles.profileAvatar, styles.directAvatar]}>
+                        <Text style={styles.profileAvatarText}>
+                          {(otherUser.callsign || otherUser.fullName || 'U').substring(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+
+                      <View style={styles.profileInfo}>
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="account" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>CALLSIGN</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.callsign || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="card-account-details" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>FULL NAME</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.fullName || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>RANK</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.rank || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="army" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>BRANCH</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.branch || 'Not set'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+              </View>
+            )}
+
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => {
+                setInfoModalVisible(false);
+                setSelectedMemberProfile(null);
+              }}>
+              <Text style={styles.cancelButtonText}>CLOSE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -1685,26 +1866,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 4,
-    gap: 8,
-  },
-  classificationBadge: {
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: '#4d5d30',
-  },
-  classificationText: {
-    color: '#a6c455',
-    fontSize: 8,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
+    gap: 4,
   },
   messageTime: {
     color: '#888',
     fontSize: 9,
     letterSpacing: 0.3,
+  },
+  messageStatus: {
+    color: '#a6c455',
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    marginLeft: 4,
   },
   emptyContainer: {
     flex: 1,
@@ -2199,5 +2373,118 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 11,
     lineHeight: 16,
+  },
+  infoDialog: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    padding: 16,
+    width: '90%',
+    maxHeight: '80%',
+  },
+  infoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  infoTitle: {
+    color: '#a6c455',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  infoContent: {
+    marginBottom: 16,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  infoLabel: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  infoValue: {
+    color: '#ffffff',
+    fontSize: 14,
+    marginBottom: 16,
+    marginLeft: 28,
+  },
+  membersList: {
+    maxHeight: 400,
+    marginTop: 8,
+  },
+  memberItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  memberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    borderWidth: 2,
+  },
+  memberAvatarText: {
+    color: '#a6c455',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  memberInfo: {
+    flex: 1,
+  },
+  memberName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  memberUsername: {
+    color: '#888',
+    fontSize: 12,
+  },
+  profileContainer: {
+    alignItems: 'center',
+  },
+  profileAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 3,
+  },
+  profileAvatarText: {
+    color: '#a6c455',
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  profileInfo: {
+    width: '100%',
+  },
+  backToListButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+    paddingVertical: 8,
+  },
+  backToListText: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
 });
