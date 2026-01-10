@@ -4,6 +4,11 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import RNFetchBlob from 'rn-fetch-blob';
+import {Platform, Linking, Share, NativeModules} from 'react-native';
+import FileViewer from 'react-native-file-viewer';
+
+const {FileOpener} = NativeModules;
 
 // Storage keys
 export const STORAGE_KEYS = {
@@ -19,12 +24,12 @@ export const STORAGE_KEYS = {
 export const getApiBaseUrl = async (): Promise<string> => {
   // const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '10.0.2.2';
   // Use local network IP to access server from real devices
-  const host = '192.168.100.79';
+  const host = '192.168.1.15';
   const port = '5000';
 
   // const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';
 
-  // Use HTTP for now (can switch to HTTPS later)
+  // Using HTTP for local development (cleartext traffic allowed in network security config)
   const protocol = 'http';
 
   return `${protocol}://${host}:${port}`;
@@ -100,7 +105,7 @@ export const apiRequest = async <T = any>(
 export const apiRequestWithHeaders = async <T = any>(
   endpoint: string,
   options?: RequestInit,
-): Promise<{data: T; headers: Headers}> => {
+): Promise<{ data: T; headers: Headers }> => {
   const response = await apiFetch(endpoint, options);
 
   if (!response.ok) {
@@ -119,7 +124,7 @@ export const apiRequestWithHeaders = async <T = any>(
 
   const data = await response.json();
   console.log('[API] Success response received');
-  return {data, headers: response.headers};
+  return { data, headers: response.headers };
 };
 
 /**
@@ -141,4 +146,109 @@ export const getSessionToken = async (): Promise<string | null> => {
  */
 export const clearSessionToken = async (): Promise<void> => {
   await AsyncStorage.removeItem(STORAGE_KEYS.SESSION_TOKEN);
+};
+
+/**
+ * Download and open a PDF file with authentication
+ */
+export const downloadAndOpenPDF = async (
+  fileUrl: string,
+  fileName: string,
+): Promise<void> => {
+  try {
+    console.log('[API] Downloading PDF:', fileUrl);
+
+    // Get session token
+    const sessionToken = await getSessionToken();
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'X-Session-Token': sessionToken || '',
+    };
+
+    // Configure download - use cache directory for better Android compatibility
+    const {config, fs, android, ios} = RNFetchBlob;
+
+    // For Android, use cache directory to avoid scoped storage issues
+    // For iOS, use documents directory
+    const downloadDir = Platform.OS === 'ios' ? fs.dirs.DocumentDir : fs.dirs.CacheDir;
+
+    // Ensure filename ends with .pdf extension
+    const sanitizedFileName = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+    const filePath = `${downloadDir}/${sanitizedFileName}`;
+
+    console.log('[API] Downloading to:', filePath);
+
+    // Download file with authentication
+    const response = await config({
+      fileCache: true,
+      path: filePath,
+    }).fetch('GET', fileUrl, headers);
+
+    const downloadedPath = response.path();
+    console.log('[API] Download complete:', downloadedPath);
+
+    // Verify the file was downloaded successfully
+    const fileExists = await fs.exists(downloadedPath);
+    console.log('[API] File exists:', fileExists);
+
+    if (!fileExists) {
+      throw new Error('File download failed - file does not exist');
+    }
+
+    // Check file size to ensure it's not empty or an error page
+    const stat = await fs.stat(downloadedPath);
+    console.log('[API] File size:', stat.size, 'bytes');
+
+    if (stat.size < 100) {
+      throw new Error('Downloaded file is too small - might be an error response');
+    }
+
+    // Open the file with system PDF viewer
+    if (Platform.OS === 'android') {
+      try {
+        console.log('[API] Opening PDF with custom FileOpener module...');
+
+        // Use our custom native module with proper FileProvider support
+        await FileOpener.openFile(downloadedPath, 'application/pdf');
+
+        console.log('[API] FileOpener succeeded - "Open with" dialog should appear');
+      } catch (openerError: any) {
+        console.error('[API] FileOpener failed:', openerError);
+
+        // Fallback: Try using RNFetchBlob's actionViewIntent
+        try {
+          console.log('[API] Trying RNFetchBlob Intent as fallback...');
+          await android.actionViewIntent(downloadedPath, 'application/pdf');
+          console.log('[API] Intent sent');
+        } catch (intentError: any) {
+          console.error('[API] Intent also failed:', intentError);
+          throw new Error('Unable to open PDF. Please install a PDF viewer like Adobe Acrobat Reader, Google PDF Viewer, or Chrome from the Play Store.');
+        }
+      }
+    } else {
+      // iOS
+      try {
+        console.log('[API] Opening PDF on iOS...');
+        await ios.openDocument(downloadedPath);
+        console.log('[API] Successfully opened PDF on iOS');
+      } catch (iosError) {
+        console.error('[API] iOS openDocument failed:', iosError);
+        throw new Error('Failed to open PDF. Please ensure you have a PDF viewer app installed.');
+      }
+    }
+  } catch (error: any) {
+    console.error('[API] Failed to download/open PDF:', error);
+
+    // Provide more helpful error messages
+    if (error.message?.includes('No Activity found') || error.message?.includes('No PDF viewer')) {
+      throw new Error('No PDF viewer app found. Please install a PDF viewer from the Play Store.');
+    } else if (error.message?.includes('Permission denied') || error.message?.includes('EACCES')) {
+      throw new Error('Permission denied. Please grant storage permissions in Settings.');
+    } else if (error.message?.includes('Network') || error.message?.includes('timeout')) {
+      throw new Error('Network error. Please check your connection and try again.');
+    } else {
+      throw error;
+    }
+  }
 };

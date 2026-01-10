@@ -1,11 +1,11 @@
-import React, {useEffect, useState} from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, Dimensions} from 'react-native';
-import {RTCView} from 'react-native-webrtc';
+import React, { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, Dimensions } from 'react-native';
+import { RTCView } from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {Participant, useCallStore} from '../store/callStore';
-import {webrtcService} from '../services/webrtcService';
+import { Participant, useCallStore } from '../store/callStore';
+import { webrtcService } from '../services/webrtcService';
 
-const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export function GroupCallScreen() {
   const {
@@ -140,12 +140,13 @@ export function GroupCallScreen() {
 
         {/* Local Video (Picture in Picture) */}
         {callType === 'video' && localStream && (
-          <View style={styles.localVideoContainer}>
+          <View style={styles.localVideoContainer} pointerEvents="box-none">
             <RTCView
               streamURL={localStream.toURL()}
               style={styles.localVideo}
               objectFit="cover"
               mirror={true}
+              zOrder={1}
             />
             <Text style={styles.localLabel}>YOU</Text>
           </View>
@@ -206,7 +207,7 @@ export function GroupCallScreen() {
               size={28}
               color="#fff"
             />
-            <Text style={[styles.controlLabel, {color: '#fff'}]}>END</Text>
+            <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -299,6 +300,8 @@ const styles = StyleSheet.create({
     borderColor: '#a6c455',
     overflow: 'hidden',
     backgroundColor: '#2a2a2a',
+    zIndex: 10,
+    elevation: 10,
   },
   localVideo: {
     width: '100%',

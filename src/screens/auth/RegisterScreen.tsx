@@ -1,15 +1,15 @@
-import React, {useState, useEffect} from 'react';
-import {View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, ActivityIndicator, StyleSheet} from 'react-native';
-import {useForm, Controller} from 'react-hook-form';
-import {zodResolver} from '@hookform/resolvers/zod';
-import {z} from 'zod';
-import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import {Picker} from '@react-native-picker/picker';
-import {Button, Input} from '../../components/ui';
-import {authService} from '../../services/authService';
-import {useAuthStore} from '../../store/authStore';
-import {apiRequest} from '../../services/apiClient';
-import type {AuthStackParamList} from '../../navigation/AuthNavigator';
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, ActivityIndicator, StyleSheet } from 'react-native';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { Picker } from '@react-native-picker/picker';
+import { Button, Input } from '../../components/ui';
+import { authService } from '../../services/authService';
+import { useAuthStore } from '../../store/authStore';
+import { apiRequest } from '../../services/apiClient';
+import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 const registerSchema = z.object({
   callsign: z.string().min(3, 'Callsign must be at least 3 characters'),
@@ -30,8 +30,8 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Register'>;
 
 interface Branch {
   id: number;
+  branchCode: string;
   branchName: string;
-  code: string;
 }
 
 interface Rank {
@@ -42,19 +42,19 @@ interface Rank {
   branch: string;
 }
 
-export function RegisterScreen({navigation}: Props) {
+export function RegisterScreen({ navigation }: Props) {
   const [isLoading, setIsLoading] = useState(false);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [ranks, setRanks] = useState<Rank[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(true);
   const [loadingRanks, setLoadingRanks] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState('');
-  const {setUser, setSessionToken} = useAuthStore();
+  const { setUser, setSessionToken } = useAuthStore();
 
   const {
     control,
     handleSubmit,
-    formState: {errors},
+    formState: { errors },
     watch,
     setValue,
   } = useForm<RegisterForm>({
@@ -119,7 +119,7 @@ export function RegisterScreen({navigation}: Props) {
   const onSubmit = async (data: RegisterForm) => {
     try {
       setIsLoading(true);
-      const {confirmPassword, ...registerData} = data;
+      const { confirmPassword, ...registerData } = data;
 
       console.log('[Register] Attempting registration for:', registerData.callsign);
       console.log('[Register] Registration data:', registerData);
@@ -132,7 +132,7 @@ export function RegisterScreen({navigation}: Props) {
       console.log('[Register] Success:', response.user.callsign);
 
       // Connect to WebSocket now that we're authenticated (pass user ID directly)
-      const {websocketService} = await import('../../services/websocket');
+      const { websocketService } = await import('../../services/websocket');
       websocketService.connect(response.user.id).catch((error) => {
         console.error('[Register] WebSocket connection error:', error);
       });
@@ -141,7 +141,7 @@ export function RegisterScreen({navigation}: Props) {
       Alert.alert(
         'Registration Successful',
         `Welcome, ${response.user.callsign}!`,
-        [{text: 'OK'}]
+        [{ text: 'OK' }]
       );
     } catch (error) {
       console.error('[Register] Error:', error);
@@ -166,7 +166,7 @@ export function RegisterScreen({navigation}: Props) {
       Alert.alert(
         'Registration Failed',
         errorMessage + (suggestions.length > 0 ? '\n\nSuggestions:\n• ' + suggestions.join('\n• ') : ''),
-        [{text: 'OK'}]
+        [{ text: 'OK' }]
       );
     } finally {
       setIsLoading(false);
@@ -180,224 +180,224 @@ export function RegisterScreen({navigation}: Props) {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled">
-          <View style={styles.innerContainer}>
-            <View style={styles.header}>
-              <Text style={styles.title}>
-                PERSONNEL REGISTRATION
-              </Text>
-              <Text style={styles.subtitle}>
-                SECURE MILITARY COMMUNICATION SYSTEM
-              </Text>
-              <View style={styles.divider} />
-            </View>
+        <View style={styles.innerContainer}>
+          <View style={styles.header}>
+            <Text style={styles.title}>
+              PERSONNEL REGISTRATION
+            </Text>
+            <Text style={styles.subtitle}>
+              SECURE MILITARY COMMUNICATION SYSTEM
+            </Text>
+            <View style={styles.divider} />
+          </View>
 
-            <View style={styles.formContainer}>
-              <Controller
-                control={control}
-                name="callsign"
-                render={({field: {onChange, onBlur, value}}) => (
-                  <View style={styles.fieldContainer}>
-                    <Text style={styles.label}>CALLSIGN / USERNAME</Text>
-                    <Input
-                      placeholder="ENTER CALLSIGN"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      error={errors.callsign?.message}
-                      autoCapitalize="characters"
-                      autoCorrect={false}
-                    />
-                    {errors.callsign && (
-                      <Text style={styles.errorText}>{errors.callsign.message}</Text>
-                    )}
-                  </View>
-                )}
-              />
-
-              <Controller
-                control={control}
-                name="nrp"
-                render={({field: {onChange, onBlur, value}}) => (
-                  <View style={styles.fieldContainer}>
-                    <Text style={styles.label}>NRP / PERSONNEL ID</Text>
-                    <Input
-                      placeholder="ENTER NRP"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      error={errors.nrp?.message}
-                      keyboardType="numeric"
-                    />
-                    {errors.nrp && (
-                      <Text style={styles.errorText}>{errors.nrp.message}</Text>
-                    )}
-                  </View>
-                )}
-              />
-
-              <Controller
-                control={control}
-                name="fullName"
-                render={({field: {onChange, onBlur, value}}) => (
-                  <View style={styles.fieldContainer}>
-                    <Text style={styles.label}>FULL NAME</Text>
-                    <Input
-                      placeholder="ENTER FULL NAME"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      error={errors.fullName?.message}
-                    />
-                    {errors.fullName && (
-                      <Text style={styles.errorText}>{errors.fullName.message}</Text>
-                    )}
-                  </View>
-                )}
-              />
-
-              <View style={styles.fieldContainer}>
-                <Text style={styles.label}>BRANCH / UNIT</Text>
-                {loadingBranches ? (
-                  <View style={styles.pickerContainer}>
-                    <ActivityIndicator size="small" color="#a6c455" />
-                  </View>
-                ) : (
-                  <Controller
-                    control={control}
-                    name="branch"
-                    render={({field: {onChange, value}}) => (
-                      <View style={styles.pickerContainer}>
-                        <Picker
-                          selectedValue={value}
-                          onValueChange={onChange}
-                          style={styles.picker}
-                          dropdownIconColor="#a6c455">
-                          <Picker.Item label="SELECT BRANCH" value="" style={styles.pickerItem} />
-                          {branches.map((branch) => (
-                            <Picker.Item
-                              key={branch.id}
-                              label={branch.branchName}
-                              value={branch.branchName}
-                              style={styles.pickerItem}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
-                    )}
+          <View style={styles.formContainer}>
+            <Controller
+              control={control}
+              name="callsign"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>CALLSIGN / USERNAME</Text>
+                  <Input
+                    placeholder="ENTER CALLSIGN"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.callsign?.message}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
                   />
-                )}
-                {errors.branch && (
-                  <Text style={styles.errorText}>{errors.branch.message}</Text>
-                )}
-              </View>
+                  {errors.callsign && (
+                    <Text style={styles.errorText}>{errors.callsign.message}</Text>
+                  )}
+                </View>
+              )}
+            />
 
-              <View style={styles.fieldContainer}>
-                <Text style={styles.label}>RANK</Text>
-                {loadingRanks ? (
-                  <View style={styles.pickerContainer}>
-                    <ActivityIndicator size="small" color="#a6c455" />
-                  </View>
-                ) : (
-                  <Controller
-                    control={control}
-                    name="rank"
-                    render={({field: {onChange, value}}) => (
-                      <View style={[styles.pickerContainer, !watchBranch && styles.pickerDisabled]}>
-                        <Picker
-                          selectedValue={value}
-                          onValueChange={onChange}
-                          enabled={!!watchBranch && ranks.length > 0}
-                          style={styles.picker}
-                          dropdownIconColor={watchBranch ? "#a6c455" : "#666"}>
+            <Controller
+              control={control}
+              name="nrp"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>NRP / PERSONNEL ID</Text>
+                  <Input
+                    placeholder="ENTER NRP"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.nrp?.message}
+                    keyboardType="numeric"
+                  />
+                  {errors.nrp && (
+                    <Text style={styles.errorText}>{errors.nrp.message}</Text>
+                  )}
+                </View>
+              )}
+            />
+
+            <Controller
+              control={control}
+              name="fullName"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>FULL NAME</Text>
+                  <Input
+                    placeholder="ENTER FULL NAME"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.fullName?.message}
+                  />
+                  {errors.fullName && (
+                    <Text style={styles.errorText}>{errors.fullName.message}</Text>
+                  )}
+                </View>
+              )}
+            />
+
+            <View style={styles.fieldContainer}>
+              <Text style={styles.label}>BRANCH / UNIT</Text>
+              {loadingBranches ? (
+                <View style={styles.pickerContainer}>
+                  <ActivityIndicator size="small" color="#a6c455" />
+                </View>
+              ) : (
+                <Controller
+                  control={control}
+                  name="branch"
+                  render={({ field: { onChange, value } }) => (
+                    <View style={styles.pickerContainer}>
+                      <Picker
+                        selectedValue={value}
+                        onValueChange={onChange}
+                        style={styles.picker}
+                        dropdownIconColor="#a6c455">
+                        <Picker.Item label="SELECT BRANCH" value="" style={styles.pickerItem} />
+                        {branches.map((branch) => (
                           <Picker.Item
-                            label={!watchBranch ? 'SELECT BRANCH FIRST' : 'SELECT RANK'}
-                            value=""
+                            key={branch.id}
+                            label={branch.branchName}
+                            value={branch.branchCode}
                             style={styles.pickerItem}
                           />
-                          {ranks.map((rank) => (
-                            <Picker.Item
-                              key={rank.id}
-                              label={rank.rankName}
-                              value={rank.rankName}
-                              style={styles.pickerItem}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
-                    )}
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                />
+              )}
+              {errors.branch && (
+                <Text style={styles.errorText}>{errors.branch.message}</Text>
+              )}
+            </View>
+
+            <View style={styles.fieldContainer}>
+              <Text style={styles.label}>RANK</Text>
+              {loadingRanks ? (
+                <View style={styles.pickerContainer}>
+                  <ActivityIndicator size="small" color="#a6c455" />
+                </View>
+              ) : (
+                <Controller
+                  control={control}
+                  name="rank"
+                  render={({ field: { onChange, value } }) => (
+                    <View style={[styles.pickerContainer, !watchBranch && styles.pickerDisabled]}>
+                      <Picker
+                        selectedValue={value}
+                        onValueChange={onChange}
+                        enabled={!!watchBranch && ranks.length > 0}
+                        style={styles.picker}
+                        dropdownIconColor={watchBranch ? "#a6c455" : "#666"}>
+                        <Picker.Item
+                          label={!watchBranch ? 'SELECT BRANCH FIRST' : 'SELECT RANK'}
+                          value=""
+                          style={styles.pickerItem}
+                        />
+                        {ranks.map((rank) => (
+                          <Picker.Item
+                            key={rank.id}
+                            label={rank.rankName}
+                            value={rank.rankName}
+                            style={styles.pickerItem}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                />
+              )}
+              {errors.rank && (
+                <Text style={styles.errorText}>{errors.rank.message}</Text>
+              )}
+            </View>
+
+            <Controller
+              control={control}
+              name="password"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>SECURITY CODE / PASSWORD</Text>
+                  <Input
+                    placeholder="ENTER SECURITY CODE"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.password?.message}
+                    secureTextEntry
+                    autoCapitalize="none"
                   />
-                )}
-                {errors.rank && (
-                  <Text style={styles.errorText}>{errors.rank.message}</Text>
-                )}
-              </View>
+                  {errors.password && (
+                    <Text style={styles.errorText}>{errors.password.message}</Text>
+                  )}
+                </View>
+              )}
+            />
 
-              <Controller
-                control={control}
-                name="password"
-                render={({field: {onChange, onBlur, value}}) => (
-                  <View style={styles.fieldContainer}>
-                    <Text style={styles.label}>SECURITY CODE / PASSWORD</Text>
-                    <Input
-                      placeholder="ENTER SECURITY CODE"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      error={errors.password?.message}
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-                    {errors.password && (
-                      <Text style={styles.errorText}>{errors.password.message}</Text>
-                    )}
-                  </View>
-                )}
+            <Controller
+              control={control}
+              name="confirmPassword"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>CONFIRM SECURITY CODE</Text>
+                  <Input
+                    placeholder="CONFIRM SECURITY CODE"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.confirmPassword?.message}
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                  {errors.confirmPassword && (
+                    <Text style={styles.errorText}>{errors.confirmPassword.message}</Text>
+                  )}
+                </View>
+              )}
+            />
+
+            <Text style={styles.disclaimer}>
+              BY REGISTERING, YOU ACCEPT ALL MILITARY COMMUNICATION PROTOCOLS
+            </Text>
+
+            <View style={styles.buttonContainer}>
+              <Button
+                title="REGISTER PERSONNEL"
+                onPress={handleSubmit(onSubmit)}
+                isLoading={isLoading}
               />
+            </View>
 
-              <Controller
-                control={control}
-                name="confirmPassword"
-                render={({field: {onChange, onBlur, value}}) => (
-                  <View style={styles.fieldContainer}>
-                    <Text style={styles.label}>CONFIRM SECURITY CODE</Text>
-                    <Input
-                      placeholder="CONFIRM SECURITY CODE"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      error={errors.confirmPassword?.message}
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-                    {errors.confirmPassword && (
-                      <Text style={styles.errorText}>{errors.confirmPassword.message}</Text>
-                    )}
-                  </View>
-                )}
+            <View style={styles.buttonContainer}>
+              <Button
+                title="BACK TO LOGIN"
+                variant="outline"
+                onPress={() => navigation.goBack()}
+                disabled={isLoading}
               />
-
-              <Text style={styles.disclaimer}>
-                BY REGISTERING, YOU ACCEPT ALL MILITARY COMMUNICATION PROTOCOLS
-              </Text>
-
-              <View style={styles.buttonContainer}>
-                <Button
-                  title="REGISTER PERSONNEL"
-                  onPress={handleSubmit(onSubmit)}
-                  isLoading={isLoading}
-                />
-              </View>
-
-              <View style={styles.buttonContainer}>
-                <Button
-                  title="BACK TO LOGIN"
-                  variant="outline"
-                  onPress={() => navigation.goBack()}
-                  disabled={isLoading}
-                />
-              </View>
             </View>
           </View>
+        </View>
 
       </ScrollView>
     </KeyboardAvoidingView>

@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,8 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
-import {apiRequest} from '../services/apiClient';
-import {useAuthStore} from '../store/authStore';
+import { apiRequest } from '../services/apiClient';
+import { useAuthStore } from '../store/authStore';
 
 interface User {
   id: number;
@@ -31,7 +31,7 @@ export function NewConversation({
   onClose,
   onConversationCreated,
 }: NewConversationProps) {
-  const {user} = useAuthStore();
+  const { user } = useAuthStore();
   const [users, setUsers] = useState<User[]>([]);
   const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -115,7 +115,7 @@ export function NewConversation({
         console.log('[NewConversation] Creating direct chat');
         const response = await apiRequest('/api/direct-chats', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             otherUserId: selectedUsers[0],
           }),
@@ -123,21 +123,24 @@ export function NewConversation({
 
         onConversationCreated(response.id, false);
       } else {
+
+        console.log("selected users:", selectedUsers)
         console.log('[NewConversation] Creating group chat:', groupName);
         console.log('[NewConversation] Request body:', {
           name: groupName.trim(),
           isGroup: true,
-          members: selectedUsers,
+          memberIds: selectedUsers,
           classification: 'UNCLASSIFIED',
         });
 
+
         const response = await apiRequest('/api/conversations', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: groupName.trim(),
             isGroup: true,
-            members: selectedUsers,
+            memberIds: selectedUsers,
             classification: 'UNCLASSIFIED',
           }),
         });
@@ -159,7 +162,7 @@ export function NewConversation({
     }
   };
 
-  const renderUserItem = ({item}: {item: User}) => {
+  const renderUserItem = ({ item }: { item: User }) => {
     const isSelected = selectedUsers.includes(item.id);
 
     return (
@@ -225,7 +228,7 @@ export function NewConversation({
                 (selectedUsers.length === 0 ||
                   isCreating ||
                   (selectedUsers.length > 1 && !groupName.trim())) &&
-                  styles.disabledText,
+                styles.disabledText,
               ]}>
               {isCreating ? 'WAIT...' : 'CREATE'}
             </Text>

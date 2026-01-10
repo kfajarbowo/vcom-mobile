@@ -15,14 +15,16 @@ import {
   Alert,
 } from 'react-native';
 import {launchImageLibrary} from 'react-native-image-picker';
+import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useChatStore, type Message} from '../store/chatStore';
 import {useAuthStore} from '../store/authStore';
-import {apiRequest, getApiBaseUrl} from '../services/apiClient';
+import {apiRequest, getApiBaseUrl, downloadAndOpenPDF} from '../services/apiClient';
 import {websocketService} from '../services/websocket';
 import {webrtcService} from '../services/webrtcService';
 import {useCallStore} from '../store/callStore';
 import {openPermissionSettings} from '../utils/permissions';
+import {VideoPlayerModal} from './VideoPlayerModal';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -72,6 +74,10 @@ export function ChatRoom({
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null);
   const [conversationMembers, setConversationMembers] = useState<any[]>([]);
+  const [displayName, setDisplayName] = useState<string>(conversationName);
+  const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
+  const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
 
@@ -139,6 +145,16 @@ export function ChatRoom({
           });
           console.log('[ChatRoom] =====================================');
           setConversationMembers(members);
+
+          // For direct chats, set display name to other participant's name
+          if (!isGroup && members.length === 2) {
+            const otherMember = members.find((m: any) => m.userId !== user?.id);
+            if (otherMember) {
+              const otherName = otherMember.callsign || otherMember.fullName || 'Unknown User';
+              console.log('[ChatRoom] Setting display name for direct chat:', otherName);
+              setDisplayName(otherName);
+            }
+          }
         } else {
           console.error('[ChatRoom] Members is not an array:', typeof members);
           setConversationMembers([]);
@@ -148,7 +164,7 @@ export function ChatRoom({
       }
     };
     loadMembers();
-  }, [conversationId]);
+  }, [conversationId, isGroup, user?.id]);
 
   useEffect(() => {
     useChatStore.getState().setCurrentConversationId(conversationId);
@@ -356,6 +372,11 @@ export function ChatRoom({
   };
 
   const handleAttachment = () => {
+    setAttachmentMenuVisible(true);
+  };
+
+  const handleImageVideoPicker = () => {
+    setAttachmentMenuVisible(false);
     launchImageLibrary(
       {
         mediaType: 'mixed',
@@ -375,6 +396,38 @@ export function ChatRoom({
     );
   };
 
+  const handleDocumentPicker = async () => {
+    setAttachmentMenuVisible(false);
+    try {
+      const result = await DocumentPicker.pick({
+        type: [DocumentPicker.types.pdf],
+        copyTo: 'cachesDirectory',
+      });
+
+      if (result && result[0]) {
+        const doc = result[0];
+        console.log('[ChatRoom] Document selected:', doc);
+
+        // Convert to the same format as image picker
+        const attachment = {
+          uri: doc.fileCopyUri || doc.uri,
+          type: doc.type,
+          fileName: doc.name,
+          fileSize: doc.size,
+        };
+
+        setSelectedAttachment(attachment);
+      }
+    } catch (err) {
+      if (DocumentPicker.isCancel(err)) {
+        console.log('[ChatRoom] User cancelled document picker');
+      } else {
+        console.error('[ChatRoom] DocumentPicker Error:', err);
+        Alert.alert('Error', 'Failed to pick document');
+      }
+    }
+  };
+
   const uploadAttachment = async (file: any): Promise<any> => {
     const formData = new FormData();
     formData.append('file', {
@@ -384,7 +437,7 @@ export function ChatRoom({
     } as any);
 
     const baseUrl = await getApiBaseUrl();
-    const response = await fetch(`${baseUrl}/api/upload`, {
+    const response = await fetch(`${baseUrl}/api/attachments/upload`, {
       method: 'POST',
       body: formData,
       headers: {
@@ -414,7 +467,15 @@ export function ChatRoom({
       // Upload attachment if selected
       if (selectedAttachment) {
         console.log('[ChatRoom] Uploading attachment...');
-        attachmentData = await uploadAttachment(selectedAttachment);
+        const uploadResponse = await uploadAttachment(selectedAttachment);
+        console.log('[ChatRoom] Upload response:', uploadResponse);
+
+        // Extract file data from response
+        if (uploadResponse.success && uploadResponse.file) {
+          attachmentData = uploadResponse.file;
+        } else {
+          throw new Error('Invalid upload response');
+        }
         console.log('[ChatRoom] Attachment uploaded:', attachmentData);
       }
 
@@ -426,10 +487,10 @@ export function ChatRoom({
 
       if (attachmentData) {
         messagePayload.hasAttachment = true;
-        messagePayload.attachmentType = selectedAttachment.type?.startsWith('image/') ? 'image' : 'file';
+        messagePayload.attachmentType = attachmentData.type;
         messagePayload.attachmentUrl = attachmentData.url;
-        messagePayload.attachmentName = selectedAttachment.fileName;
-        messagePayload.attachmentSize = selectedAttachment.fileSize;
+        messagePayload.attachmentName = attachmentData.name;
+        messagePayload.attachmentSize = attachmentData.size;
       }
 
       if (replyToMessage) {
@@ -575,7 +636,7 @@ export function ChatRoom({
         callId,
         callType,
         receiverUserId: recipientUserId,
-        receiverName: conversationName,
+        receiverName: displayName,
         conversationId,
       });
 
@@ -812,6 +873,45 @@ export function ChatRoom({
                     console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
                   }}
                 />
+              ) : item.attachmentType === 'video' ? (
+                <TouchableOpacity
+                  style={styles.videoAttachment}
+                  onPress={() => {
+                    const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                    if (fullUrl) {
+                      setSelectedVideo({
+                        url: fullUrl,
+                        name: item.attachmentName || 'Video',
+                      });
+                      setVideoPlayerVisible(true);
+                    }
+                  }}>
+                  <View style={styles.videoThumbnail}>
+                    <MaterialCommunityIcons name="play-circle-outline" size={64} color="#a6c455" />
+                  </View>
+                  <Text style={styles.videoFileName} numberOfLines={1}>
+                    {item.attachmentName || 'Video'}
+                  </Text>
+                </TouchableOpacity>
+              ) : item.attachmentType === 'document' || item.attachmentName?.endsWith('.pdf') ? (
+                <TouchableOpacity
+                  style={styles.fileAttachment}
+                  onPress={async () => {
+                    const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                    if (fullUrl) {
+                      try {
+                        await downloadAndOpenPDF(fullUrl, item.attachmentName || 'document.pdf');
+                      } catch (error) {
+                        console.error('[ChatRoom] Failed to open PDF:', error);
+                        Alert.alert('Error', 'Failed to download or open PDF file');
+                      }
+                    }
+                  }}>
+                  <MaterialCommunityIcons name="file-pdf-box" size={32} color="#d97070" />
+                  <Text style={styles.fileName} numberOfLines={1}>
+                    {item.attachmentName || 'PDF Document'}
+                  </Text>
+                </TouchableOpacity>
               ) : (
                 <TouchableOpacity
                   style={styles.fileAttachment}
@@ -914,18 +1014,18 @@ export function ChatRoom({
         <View style={styles.headerCenter}>
           <View style={[styles.headerAvatar, isGroup ? styles.groupAvatar : styles.directAvatar]}>
             <Text style={styles.headerAvatarText}>
-              {conversationName.substring(0, 2).toUpperCase()}
+              {displayName.substring(0, 2).toUpperCase()}
             </Text>
           </View>
 
           <View style={styles.headerInfo}>
             <Text style={styles.headerTitle} numberOfLines={1}>
-              {conversationName.toUpperCase()}
+              {displayName.toUpperCase()}
             </Text>
             <View style={styles.headerStatus}>
               <View style={styles.statusDot} />
               <Text style={styles.headerSubtitle}>
-                {isGroup ? 'SECURE GROUP CHANNEL' : 'ENCRYPTED LINK'}
+                {isGroup ? 'GROUP CHANNEL' : 'DIRECT CHAT'}
               </Text>
             </View>
           </View>
@@ -1065,6 +1165,20 @@ export function ChatRoom({
                   source={{uri: selectedAttachment.uri}}
                   style={styles.previewImage}
                 />
+              ) : selectedAttachment.type?.startsWith('video/') ? (
+                <View style={styles.previewFile}>
+                  <MaterialCommunityIcons name="video" size={24} color="#a6c455" />
+                  <Text style={styles.previewFileName} numberOfLines={1}>
+                    {selectedAttachment.fileName}
+                  </Text>
+                </View>
+              ) : selectedAttachment.type === 'application/pdf' ? (
+                <View style={styles.previewFile}>
+                  <MaterialCommunityIcons name="file-pdf-box" size={24} color="#d97070" />
+                  <Text style={styles.previewFileName} numberOfLines={1}>
+                    {selectedAttachment.fileName}
+                  </Text>
+                </View>
               ) : (
                 <View style={styles.previewFile}>
                   <Text style={styles.previewFileIcon}>📎</Text>
@@ -1080,6 +1194,39 @@ export function ChatRoom({
               </TouchableOpacity>
             </View>
           </View>
+        )}
+
+        {/* Attachment Menu */}
+        {attachmentMenuVisible && (
+          <View style={styles.attachmentMenu}>
+            <TouchableOpacity
+              style={styles.attachmentOption}
+              onPress={handleImageVideoPicker}
+              activeOpacity={0.7}>
+              <View style={styles.attachmentOptionIcon}>
+                <MaterialCommunityIcons name="image" size={24} color="#a6c455" />
+              </View>
+              <Text style={styles.attachmentOptionText}>Photos & Videos</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.attachmentOption}
+              onPress={handleDocumentPicker}
+              activeOpacity={0.7}>
+              <View style={styles.attachmentOptionIcon}>
+                <MaterialCommunityIcons name="file-document" size={24} color="#7fa6d9" />
+              </View>
+              <Text style={styles.attachmentOptionText}>Documents</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {attachmentMenuVisible && (
+          <TouchableOpacity
+            style={styles.attachmentMenuOverlay}
+            activeOpacity={1}
+            onPress={() => setAttachmentMenuVisible(false)}
+          />
         )}
 
         <View style={styles.inputWrapper}>
@@ -1306,6 +1453,17 @@ export function ChatRoom({
           </View>
         </View>
       </Modal>
+
+      {/* Video Player Modal */}
+      <VideoPlayerModal
+        visible={videoPlayerVisible}
+        videoUrl={selectedVideo?.url || ''}
+        videoName={selectedVideo?.name}
+        onClose={() => {
+          setVideoPlayerVisible(false);
+          setSelectedVideo(null);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -1733,6 +1891,29 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: '#2a2a2a',
   },
+  videoAttachment: {
+    maxWidth: 260,
+    width: '100%',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    overflow: 'hidden',
+  },
+  videoThumbnail: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#1a1a1a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoFileName: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    padding: 12,
+    textAlign: 'center',
+  },
   fileAttachment: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1751,6 +1932,56 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     flex: 1,
+  },
+  attachmentMenuOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'transparent',
+  },
+  attachmentMenu: {
+    position: 'absolute',
+    bottom: 70,
+    left: 8,
+    backgroundColor: '#2a2a2a',
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    padding: 8,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  attachmentOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 4,
+    backgroundColor: '#1a1a1a',
+    gap: 12,
+    minWidth: 200,
+  },
+  attachmentOptionIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachmentOptionText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   repliedMessageContainer: {
     backgroundColor: 'rgba(0, 0, 0, 0.2)',

@@ -7,10 +7,10 @@ import {
   MediaStreamTrack,
 } from 'react-native-webrtc';
 import InCallManager from 'react-native-incall-manager';
-import {websocketService} from './websocket';
-import {useCallStore, CallType} from '../store/callStore';
-import {useAuthStore} from '../store/authStore';
-import {requestCameraAndMicrophonePermissions, requestMicrophonePermission} from '../utils/permissions';
+import { websocketService } from './websocket';
+import { useCallStore, CallType } from '../store/callStore';
+import { useAuthStore } from '../store/authStore';
+import { requestCameraAndMicrophonePermissions, requestMicrophonePermission } from '../utils/permissions';
 import {
   ICE_SERVERS,
   getMediaConstraints,
@@ -152,7 +152,7 @@ export class GroupCallService {
 
   // Wait for local stream to be available
   private async waitForLocalStream(): Promise<MediaStream | null> {
-    const {maxRetries, shortDelay, longDelay, shortRetryThreshold} = STREAM_WAIT_CONFIG;
+    const { maxRetries, shortDelay, longDelay, shortRetryThreshold } = STREAM_WAIT_CONFIG;
 
     for (let i = 0; i < maxRetries; i++) {
       const localStream = useCallStore.getState().localStream;
@@ -271,19 +271,25 @@ export class GroupCallService {
 
       // Add audio tracks first
       localStream.getAudioTracks().forEach((track) => {
+        console.log('[WebRTC Group] Adding audio track:', track.id);
         peerConnection.addTrack(track, localStream);
       });
 
       // Then add video tracks
       localStream.getVideoTracks().forEach((track) => {
+        console.log('[WebRTC Group] Adding video track:', track.id);
         peerConnection.addTrack(track, localStream);
       });
 
+      console.log('[WebRTC Group] Total transceivers:', peerConnection.getTransceivers().length);
+
       console.log('[WebRTC Group] Creating offer, current state:', peerConnection.signalingState);
 
+      // Always request both audio and video transceivers to prevent mismatch issues
+      // even if the call is audio-only, this ensures consistent SDP structure
       const offer = await peerConnection.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: useCallStore.getState().callType === 'video',
+        offerToReceiveVideo: true,
       });
 
       if ((peerConnection.signalingState as any) === 'closed' || !isCurrentConnection()) {
@@ -370,13 +376,17 @@ export class GroupCallService {
 
       // Add audio tracks first
       localStream.getAudioTracks().forEach((track) => {
+        console.log('[WebRTC Group] Adding audio track:', track.id);
         peerConnection.addTrack(track, localStream);
       });
 
       // Then add video tracks
       localStream.getVideoTracks().forEach((track) => {
+        console.log('[WebRTC Group] Adding video track:', track.id);
         peerConnection.addTrack(track, localStream);
       });
+
+      console.log('[WebRTC Group] Total transceivers:', peerConnection.getTransceivers().length);
 
       if ((peerConnection.signalingState as any) === 'closed' || !isCurrentConnection()) {
         console.log('[WebRTC Group] ℹ️ Answer aborted (connection replaced) - normal during glare');
@@ -450,12 +460,20 @@ export class GroupCallService {
       }
 
       console.log('[WebRTC Group] Current signaling state:', peerConnection.signalingState);
+      console.log('[WebRTC Group] Transceivers before setting answer:', peerConnection.getTransceivers().length);
 
       if (peerConnection.signalingState === 'have-local-offer') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log('[WebRTC Group] ✅ Remote description set for participant:', fromUserId);
+        try {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+          console.log('[WebRTC Group] ✅ Remote description set for participant:', fromUserId);
+          console.log('[WebRTC Group] Transceivers after setting answer:', peerConnection.getTransceivers().length);
 
-        this.addGroupPendingIceCandidates(fromUserId);
+          this.addGroupPendingIceCandidates(fromUserId);
+        } catch (setRemoteError) {
+          console.error('[WebRTC Group] ❌ Error setting remote description (answer):', setRemoteError);
+          console.error('[WebRTC Group] Answer SDP:', answer.sdp?.substring(0, 200) + '...');
+          throw setRemoteError;
+        }
       } else if (peerConnection.signalingState === 'stable') {
         console.warn('[WebRTC Group] ⚠️ Peer connection already stable, ignoring answer from:', fromUserId);
       } else {

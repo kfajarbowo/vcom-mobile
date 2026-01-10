@@ -1,4 +1,4 @@
-import {CallType} from '../store/callStore';
+import { CallType } from '../store/callStore';
 
 /**
  * WebRTC Configuration
@@ -20,18 +20,18 @@ export const ICE_SERVERS = {
     },
     // Local TURN server (coturn) - use local network IP for real devices
     {
-      urls: 'turn:192.168.100.79:3478',
+      urls: 'turn:192.168.1.72:3478',
       username: 'test',
       credential: 'test123',
     },
     // Also try UDP and TCP
     {
-      urls: 'turn:192.168.100.79:3478?transport=udp',
+      urls: 'turn:192.168.1.72:3478?transport=udp',
       username: 'test',
       credential: 'test123',
     },
     {
-      urls: 'turn:192.168.100.79:3478?transport=tcp',
+      urls: 'turn:192.168.1.72:3478?transport=tcp',
       username: 'test',
       credential: 'test123',
     },
@@ -42,11 +42,17 @@ export const ICE_SERVERS = {
 
 // Media constraints for getUserMedia
 export const getMediaConstraints = (callType: CallType) => ({
-  audio: true,
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    sampleRate: { ideal: 48000 },
+    channelCount: { ideal: 1 },
+  },
   video: callType === 'video' ? {
-    width: 640,
-    height: 480,
-    frameRate: 30,
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 30 },
     facingMode: 'user',
   } : false,
 });
