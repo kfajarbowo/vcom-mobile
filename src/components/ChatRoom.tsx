@@ -13,6 +13,7 @@ import {
   Linking,
   Modal,
   Alert,
+  BackHandler,
 } from 'react-native';
 import {launchImageLibrary} from 'react-native-image-picker';
 import DocumentPicker from 'react-native-document-picker';
@@ -102,6 +103,16 @@ export function ChatRoom({
       setBaseUrl(url);
     });
   }, []);
+
+  // Handle hardware back button on Android
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true; // Prevent default behavior (going to home)
+    });
+
+    return () => backHandler.remove();
+  }, [onBack]);
 
   // Scroll to unread messages or bottom on initial load
   useEffect(() => {
@@ -374,7 +385,7 @@ export function ChatRoom({
   };
 
   const handleAttachment = () => {
-    setAttachmentMenuVisible(true);
+    setAttachmentMenuVisible(!attachmentMenuVisible);
   };
 
   const handleImageVideoPicker = () => {
@@ -761,6 +772,55 @@ export function ChatRoom({
         );
       }
     }
+  };
+
+  const handleRemoveMember = async (memberId: number, memberName: string) => {
+    // Check if current user is admin
+    const currentMember = conversationMembers.find(m => m.userId === user?.id);
+    const isAdmin = currentMember?.role === 'admin';
+
+    if (!isAdmin) {
+      Alert.alert('Permission Denied', 'Only group admins can remove members.');
+      return;
+    }
+
+    if (memberId === user?.id) {
+      Alert.alert('Cannot Remove Yourself', 'You cannot remove yourself from the group.');
+      return;
+    }
+
+    Alert.alert(
+      'Remove Member',
+      `Are you sure you want to remove ${memberName} from this group? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiRequest(`/api/groups/${conversationId}/members/${memberId}`, {
+                method: 'DELETE'
+              });
+
+              // Refresh member list
+              const members = await apiRequest(`/api/conversations/${conversationId}/members`);
+              if (Array.isArray(members)) {
+                setConversationMembers(members);
+              }
+
+              Alert.alert('Success', 'Member removed successfully.');
+            } catch (error: any) {
+              console.error('[ChatRoom] Error removing member:', error);
+              Alert.alert('Error', error.message || 'Failed to remove member.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const performDelete = async (deleteForEveryone: boolean) => {
@@ -1199,6 +1259,15 @@ export function ChatRoom({
           </View>
         )}
 
+        {/* Attachment Menu Overlay */}
+        {attachmentMenuVisible && (
+          <TouchableOpacity
+            style={styles.attachmentMenuOverlay}
+            activeOpacity={1}
+            onPress={() => setAttachmentMenuVisible(false)}
+          />
+        )}
+
         {/* Attachment Menu */}
         {attachmentMenuVisible && (
           <View style={styles.attachmentMenu}>
@@ -1224,23 +1293,15 @@ export function ChatRoom({
           </View>
         )}
 
-        {attachmentMenuVisible && (
-          <TouchableOpacity
-            style={styles.attachmentMenuOverlay}
-            activeOpacity={1}
-            onPress={() => setAttachmentMenuVisible(false)}
-          />
-        )}
-
         <View style={styles.inputWrapper}>
           <TouchableOpacity
             style={styles.attachButton}
             onPress={handleAttachment}
             disabled={isSending}>
             <MaterialCommunityIcons
-              name="paperclip"
+              name={attachmentMenuVisible ? "close" : "paperclip"}
               size={22}
-              color={isSending ? '#3a3a3a' : '#a6c455'}
+              color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
             />
           </TouchableOpacity>
 
@@ -1534,7 +1595,7 @@ export function ChatRoom({
                       </Text>
 
                       <View style={styles.infoItem}>
-                        <MaterialCommunityIcons name="army" size={20} color="#a6c455" />
+                        <MaterialCommunityIcons name="shield-account" size={20} color="#a6c455" />
                         <Text style={styles.infoLabel}>BRANCH</Text>
                       </View>
                       <Text style={styles.infoValue}>
@@ -1556,28 +1617,53 @@ export function ChatRoom({
                   <FlatList
                     data={conversationMembers}
                     keyExtractor={(item) => String(item.userId)}
-                    renderItem={({item}) => (
-                      <TouchableOpacity
-                        style={styles.memberItem}
-                        onPress={() => setSelectedMemberProfile(item)}
-                        activeOpacity={0.7}>
-                        <View style={[styles.memberAvatar, styles.directAvatar]}>
-                          <Text style={styles.memberAvatarText}>
-                            {(item.callsign || item.fullName || 'U').substring(0, 2).toUpperCase()}
-                          </Text>
+                    renderItem={({item}) => {
+                      const currentMember = conversationMembers.find(m => m.userId === user?.id);
+                      const isCurrentUserAdmin = currentMember?.role === 'admin';
+                      const isMemberAdmin = item.role === 'admin';
+                      const canRemove = isCurrentUserAdmin && item.userId !== user?.id;
+
+                      return (
+                        <View style={styles.memberItem}>
+                          <TouchableOpacity
+                            style={styles.memberTouchable}
+                            onPress={() => setSelectedMemberProfile(item)}
+                            activeOpacity={0.7}>
+                            <View style={[styles.memberAvatar, styles.directAvatar]}>
+                              <Text style={styles.memberAvatarText}>
+                                {(item.callsign || item.fullName || 'U').substring(0, 2).toUpperCase()}
+                              </Text>
+                            </View>
+                            <View style={styles.memberInfo}>
+                              <View style={styles.memberNameRow}>
+                                <Text style={styles.memberName}>
+                                  {item.callsign || item.fullName || 'Unknown User'}
+                                  {item.userId === user?.id && ' (YOU)'}
+                                </Text>
+                                {isMemberAdmin && (
+                                  <View style={styles.adminBadge}>
+                                    <MaterialCommunityIcons name="shield-crown" size={12} color="#FFD700" />
+                                    <Text style={styles.adminBadgeText}>ADMIN</Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text style={styles.memberUsername}>
+                                {item.rank || 'No Rank'} • {item.branch || 'No Branch'}
+                              </Text>
+                            </View>
+                            <MaterialCommunityIcons name="chevron-right" size={20} color="#666" />
+                          </TouchableOpacity>
+                          {canRemove && (
+                            <TouchableOpacity
+                              style={styles.removeMemberButton}
+                              onPress={() => handleRemoveMember(item.userId, item.callsign || item.fullName || 'Unknown User')}
+                              activeOpacity={0.7}>
+                              <MaterialCommunityIcons name="account-remove" size={20} color="#ff4444" />
+                            </TouchableOpacity>
+                          )}
                         </View>
-                        <View style={styles.memberInfo}>
-                          <Text style={styles.memberName}>
-                            {item.callsign || item.fullName || 'Unknown User'}
-                            {item.userId === user?.id && ' (YOU)'}
-                          </Text>
-                          <Text style={styles.memberUsername}>
-                            {item.rank || 'No Rank'} • {item.branch || 'No Branch'}
-                          </Text>
-                        </View>
-                        <MaterialCommunityIcons name="chevron-right" size={20} color="#666" />
-                      </TouchableOpacity>
-                    )}
+                      );
+                    }}
                     style={styles.membersList}
                   />
                 </View>
@@ -1621,7 +1707,7 @@ export function ChatRoom({
                         </Text>
 
                         <View style={styles.infoItem}>
-                          <MaterialCommunityIcons name="army" size={20} color="#a6c455" />
+                          <MaterialCommunityIcons name="shield-account" size={20} color="#a6c455" />
                           <Text style={styles.infoLabel}>BRANCH</Text>
                         </View>
                         <Text style={styles.infoValue}>
@@ -2113,7 +2199,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 999,
+    elevation: 5,
   },
   attachmentMenu: {
     position: 'absolute',
@@ -2132,7 +2220,8 @@ const styles = StyleSheet.create({
     },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    elevation: 8,
+    elevation: 10,
+    zIndex: 1000,
   },
   attachmentOption: {
     flexDirection: 'row',
@@ -2423,9 +2512,14 @@ const styles = StyleSheet.create({
   memberItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#2a2a2a',
+  },
+  memberTouchable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    padding: 12,
   },
   memberAvatar: {
     width: 40,
@@ -2448,11 +2542,35 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: 'bold',
-    marginBottom: 2,
   },
   memberUsername: {
     color: '#888',
     fontSize: 12,
+  },
+  memberNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  adminBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  adminBadgeText: {
+    color: '#FFD700',
+    fontSize: 10,
+    fontWeight: 'bold',
+    marginLeft: 2,
+  },
+  removeMemberButton: {
+    padding: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileContainer: {
     alignItems: 'center',
