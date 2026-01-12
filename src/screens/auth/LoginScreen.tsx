@@ -9,6 +9,7 @@ import {Button, Input} from '../../components/ui';
 import {authService} from '../../services/authService';
 import {useAuthStore} from '../../store/authStore';
 import {setApiServer, STORAGE_KEYS} from '../../services/apiClient';
+import {clearLicenseKey} from '../../services/licenseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {AuthStackParamList} from '../../navigation/AuthNavigator';
 
@@ -68,6 +69,28 @@ export function LoginScreen({navigation}: Props) {
       password: '',
     },
   });
+
+  const handleClearLicense = async () => {
+    Alert.alert(
+      'Clear License Key',
+      'This will erase the license key and require re-activation on next app restart. This is for testing only.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await clearLicenseKey();
+              Alert.alert('Success', 'License key cleared. Restart the app to see activation screen.', [{text: 'OK'}]);
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear license key', [{text: 'OK'}]);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const onSubmit = async (data: LoginForm) => {
     try {
@@ -283,6 +306,16 @@ export function LoginScreen({navigation}: Props) {
               <Text style={styles.footerText}>
                 ⚠ INTRANET COMMUNICATIONS ONLY - CLASSIFIED
               </Text>
+
+              {/* Testing Only - Clear License Key */}
+              <TouchableOpacity
+                style={styles.clearLicenseButton}
+                onPress={handleClearLicense}
+                activeOpacity={0.7}>
+                <Text style={styles.clearLicenseText}>
+                  [TEST] Clear License Key
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -388,6 +421,18 @@ const styles = StyleSheet.create({
     marginTop: 32,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  clearLicenseButton: {
+    marginTop: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignSelf: 'center',
+  },
+  clearLicenseText: {
+    fontSize: 9,
+    color: '#666',
+    letterSpacing: 0.5,
+    textAlign: 'center',
   },
   serverSettingsToggle: {
     flexDirection: 'row',
