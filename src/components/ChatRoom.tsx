@@ -13,18 +13,20 @@ import {
   Linking,
   Modal,
   Alert,
+  BackHandler,
 } from 'react-native';
-import {launchImageLibrary} from 'react-native-image-picker';
+import {launchImageLibrary, launchCamera} from 'react-native-image-picker';
 import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useChatStore, type Message} from '../store/chatStore';
 import {useAuthStore} from '../store/authStore';
-import {apiRequest, getApiBaseUrl, downloadAndOpenPDF} from '../services/apiClient';
+import {apiRequest, getApiBaseUrl, downloadAndOpenPDF, getSessionToken} from '../services/apiClient';
 import {websocketService} from '../services/websocket';
 import {webrtcService} from '../services/webrtcService';
 import {useCallStore} from '../store/callStore';
 import {openPermissionSettings} from '../utils/permissions';
 import {VideoPlayerModal} from './VideoPlayerModal';
+import {ImageViewerModal} from './ImageViewerModal';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -77,7 +79,11 @@ export function ChatRoom({
   const [displayName, setDisplayName] = useState<string>(conversationName);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
+  const [imageViewerVisible, setImageViewerVisible] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{url: string; name: string} | null>(null);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
+  const [infoModalVisible, setInfoModalVisible] = useState(false);
+  const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
 
@@ -100,6 +106,16 @@ export function ChatRoom({
       setBaseUrl(url);
     });
   }, []);
+
+  // Handle hardware back button on Android
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true; // Prevent default behavior (going to home)
+    });
+
+    return () => backHandler.remove();
+  }, [onBack]);
 
   // Scroll to unread messages or bottom on initial load
   useEffect(() => {
@@ -372,7 +388,7 @@ export function ChatRoom({
   };
 
   const handleAttachment = () => {
-    setAttachmentMenuVisible(true);
+    setAttachmentMenuVisible(!attachmentMenuVisible);
   };
 
   const handleImageVideoPicker = () => {
@@ -391,6 +407,43 @@ export function ChatRoom({
         } else if (response.assets && response.assets[0]) {
           setSelectedAttachment(response.assets[0]);
           console.log('[ChatRoom] Attachment selected:', response.assets[0]);
+        }
+      }
+    );
+  };
+
+  const handleCameraPicker = () => {
+    setAttachmentMenuVisible(false);
+    launchCamera(
+      {
+        mediaType: 'mixed',
+        quality: 0.8,
+        saveToPhotos: true,
+      },
+      (response) => {
+        if (response.didCancel) {
+          console.log('[ChatRoom] User cancelled camera');
+        } else if (response.errorCode) {
+          console.error('[ChatRoom] Camera Error:', response.errorMessage);
+          if (response.errorCode === 'camera_unavailable') {
+            Alert.alert('Camera Unavailable', 'Camera is not available on this device');
+          } else if (response.errorCode === 'permission') {
+            Alert.alert(
+              'Permission Required',
+              'VComm needs camera permissions to take photos and videos. Please grant permissions in your device settings.',
+              [
+                {text: 'Cancel', style: 'cancel'},
+                {
+                  text: 'Open Settings',
+                  onPress: () => openPermissionSettings(),
+                  style: 'default',
+                },
+              ]
+            );
+          }
+        } else if (response.assets && response.assets[0]) {
+          setSelectedAttachment(response.assets[0]);
+          console.log('[ChatRoom] Camera capture selected:', response.assets[0]);
         }
       }
     );
@@ -429,27 +482,57 @@ export function ChatRoom({
   };
 
   const uploadAttachment = async (file: any): Promise<any> => {
-    const formData = new FormData();
-    formData.append('file', {
-      uri: file.uri,
-      type: file.type || 'application/octet-stream',
-      name: file.fileName || 'attachment',
-    } as any);
+    try {
+      const formData = new FormData();
+      formData.append('file', {
+        uri: file.uri,
+        type: file.type || 'application/octet-stream',
+        name: file.fileName || 'attachment',
+      } as any);
 
-    const baseUrl = await getApiBaseUrl();
-    const response = await fetch(`${baseUrl}/api/attachments/upload`, {
-      method: 'POST',
-      body: formData,
-      headers: {
+      const baseUrl = await getApiBaseUrl();
+      const sessionToken = await getSessionToken();
+
+      console.log('[ChatRoom] Uploading attachment to:', `${baseUrl}/api/attachments/upload`);
+      console.log('[ChatRoom] File details:', {
+        uri: file.uri,
+        type: file.type,
+        name: file.fileName,
+      });
+
+      const headers: Record<string, string> = {
         'Content-Type': 'multipart/form-data',
-      },
-    });
+      };
 
-    if (!response.ok) {
-      throw new Error('Failed to upload attachment');
+      // Add session token for authentication
+      if (sessionToken) {
+        headers['X-Session-Token'] = sessionToken;
+        console.log('[ChatRoom] Added X-Session-Token header for upload');
+      } else {
+        console.warn('[ChatRoom] No session token found for upload');
+      }
+
+      const response = await fetch(`${baseUrl}/api/attachments/upload`, {
+        method: 'POST',
+        body: formData,
+        headers,
+      });
+
+      console.log('[ChatRoom] Upload response status:', response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[ChatRoom] Upload failed:', errorText);
+        throw new Error(`Failed to upload attachment: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log('[ChatRoom] Upload successful:', result);
+      return result;
+    } catch (error) {
+      console.error('[ChatRoom] Upload error:', error);
+      throw error;
     }
-
-    return await response.json();
   };
 
   const sendMessage = async () => {
@@ -509,12 +592,37 @@ export function ChatRoom({
       setSelectedAttachment(null);
       setReplyToMessage(null);
 
-      // Reload messages immediately to show the new message (without showing loading spinner)
+      // Wait a moment before reloading to ensure server has fully processed the message
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Reload messages to show the new message (without showing loading spinner)
       await loadMessages(false);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('[ChatRoom] Error sending message:', error);
       setMessageText(content);
+
+      // Show user-friendly error message
+      const errorMessage = error?.message || 'Failed to send message';
+      if (errorMessage.includes('Network request failed')) {
+        Alert.alert(
+          'Network Error',
+          'Unable to connect to the server. Please check your network connection and try again.',
+          [{text: 'OK'}]
+        );
+      } else if (errorMessage.includes('upload attachment')) {
+        Alert.alert(
+          'Upload Failed',
+          'Failed to upload attachment. Please try again or choose a different file.',
+          [{text: 'OK'}]
+        );
+      } else {
+        Alert.alert(
+          'Error',
+          errorMessage,
+          [{text: 'OK'}]
+        );
+      }
     } finally {
       setIsSending(false);
     }
@@ -761,6 +869,55 @@ export function ChatRoom({
     }
   };
 
+  const handleRemoveMember = async (memberId: number, memberName: string) => {
+    // Check if current user is admin
+    const currentMember = conversationMembers.find(m => m.userId === user?.id);
+    const isAdmin = currentMember?.role === 'admin';
+
+    if (!isAdmin) {
+      Alert.alert('Permission Denied', 'Only group admins can remove members.');
+      return;
+    }
+
+    if (memberId === user?.id) {
+      Alert.alert('Cannot Remove Yourself', 'You cannot remove yourself from the group.');
+      return;
+    }
+
+    Alert.alert(
+      'Remove Member',
+      `Are you sure you want to remove ${memberName} from this group? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiRequest(`/api/groups/${conversationId}/members/${memberId}`, {
+                method: 'DELETE'
+              });
+
+              // Refresh member list
+              const members = await apiRequest(`/api/conversations/${conversationId}/members`);
+              if (Array.isArray(members)) {
+                setConversationMembers(members);
+              }
+
+              Alert.alert('Success', 'Member removed successfully.');
+            } catch (error: any) {
+              console.error('[ChatRoom] Error removing member:', error);
+              Alert.alert('Error', error.message || 'Failed to remove member.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const performDelete = async (deleteForEveryone: boolean) => {
     if (!messageToDelete) return;
 
@@ -809,8 +966,13 @@ export function ChatRoom({
 
     // Get full attachment URL
     const getFullAttachmentUrl = (url: string | undefined) => {
-      if (!url || !baseUrl) {
-        console.log('[ChatRoom] getFullAttachmentUrl - missing url or baseUrl:', {url, baseUrl});
+      if (!url) {
+        console.log('[ChatRoom] getFullAttachmentUrl - missing url');
+        return '';
+      }
+      if (!baseUrl) {
+        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet, returning relative url:', url);
+        // If baseUrl isn't loaded yet, return empty and wait for re-render
         return '';
       }
       if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -861,18 +1023,45 @@ export function ChatRoom({
           {item.hasAttachment && item.attachmentUrl && (
             <View style={styles.attachmentContainer}>
               {item.attachmentType === 'image' ? (
-                <Image
-                  source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
-                  style={styles.attachmentImage}
-                  resizeMode="cover"
-                  onError={(error) => {
-                    console.log('[ChatRoom] Image load error:', error.nativeEvent);
-                    console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
-                  }}
-                  onLoad={() => {
-                    console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
-                  }}
-                />
+                baseUrl ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                      console.log('[ChatRoom] Image clicked, fullUrl:', fullUrl);
+                      console.log('[ChatRoom] baseUrl:', baseUrl);
+                      console.log('[ChatRoom] item.attachmentUrl:', item.attachmentUrl);
+                      if (fullUrl) {
+                        setSelectedImage({
+                          url: fullUrl,
+                          name: item.attachmentName || 'Image',
+                        });
+                        setImageViewerVisible(true);
+                      } else {
+                        console.warn('[ChatRoom] Full URL is empty, cannot open image viewer');
+                      }
+                    }}
+                    activeOpacity={0.8}
+                    style={styles.imageClickable}
+                    disabled={false}>
+                    <Image
+                      source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
+                      style={styles.attachmentImage}
+                      resizeMode="cover"
+                      pointerEvents="none"
+                      onError={(error) => {
+                        console.log('[ChatRoom] Image load error:', error.nativeEvent);
+                        console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
+                      }}
+                      onLoad={() => {
+                        console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
+                      }}
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.attachmentImage}>
+                    <ActivityIndicator size="small" color="#a6c455" />
+                  </View>
+                )
               ) : item.attachmentType === 'video' ? (
                 <TouchableOpacity
                   style={styles.videoAttachment}
@@ -931,14 +1120,12 @@ export function ChatRoom({
           <Text style={styles.messageText}>{content}</Text>
 
           <View style={styles.messageFooter}>
-            {item.classification && (
-              <View style={styles.classificationBadge}>
-                <Text style={styles.classificationText}>
-                  {item.classification}
-                </Text>
-              </View>
-            )}
             <Text style={styles.messageTime}>{formatTime(item.timestamp || '')}</Text>
+            {isOwnMessage && (
+              <Text style={styles.messageStatus}>
+                {item.isRead ? 'READ' : item.id ? 'SENT' : 'PENDING'}
+              </Text>
+            )}
           </View>
         </View>
 
@@ -1011,7 +1198,10 @@ export function ChatRoom({
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
 
-        <View style={styles.headerCenter}>
+        <TouchableOpacity
+          style={styles.headerCenter}
+          onPress={() => setInfoModalVisible(true)}
+          activeOpacity={0.7}>
           <View style={[styles.headerAvatar, isGroup ? styles.groupAvatar : styles.directAvatar]}>
             <Text style={styles.headerAvatarText}>
               {displayName.substring(0, 2).toUpperCase()}
@@ -1029,7 +1219,7 @@ export function ChatRoom({
               </Text>
             </View>
           </View>
-        </View>
+        </TouchableOpacity>
 
         <View style={styles.headerActions}>
           {/* Show Rejoin button if there's an active group call for this conversation */}
@@ -1082,6 +1272,7 @@ export function ChatRoom({
         <FlatList
           ref={flatListRef}
           data={groupedMessages}
+          extraData={`${messages.length}-${baseUrl}`}
           renderItem={({item: group}) => (
             <View>
               {renderDateSeparator(group.date)}
@@ -1196,9 +1387,28 @@ export function ChatRoom({
           </View>
         )}
 
+        {/* Attachment Menu Overlay */}
+        {attachmentMenuVisible && (
+          <TouchableOpacity
+            style={styles.attachmentMenuOverlay}
+            activeOpacity={1}
+            onPress={() => setAttachmentMenuVisible(false)}
+          />
+        )}
+
         {/* Attachment Menu */}
         {attachmentMenuVisible && (
           <View style={styles.attachmentMenu}>
+            <TouchableOpacity
+              style={styles.attachmentOption}
+              onPress={handleCameraPicker}
+              activeOpacity={0.7}>
+              <View style={styles.attachmentOptionIcon}>
+                <MaterialCommunityIcons name="camera" size={24} color="#d9a870" />
+              </View>
+              <Text style={styles.attachmentOptionText}>Camera</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.attachmentOption}
               onPress={handleImageVideoPicker}
@@ -1221,23 +1431,15 @@ export function ChatRoom({
           </View>
         )}
 
-        {attachmentMenuVisible && (
-          <TouchableOpacity
-            style={styles.attachmentMenuOverlay}
-            activeOpacity={1}
-            onPress={() => setAttachmentMenuVisible(false)}
-          />
-        )}
-
         <View style={styles.inputWrapper}>
           <TouchableOpacity
             style={styles.attachButton}
             onPress={handleAttachment}
             disabled={isSending}>
             <MaterialCommunityIcons
-              name="paperclip"
+              name={attachmentMenuVisible ? "close" : "paperclip"}
               size={22}
-              color={isSending ? '#3a3a3a' : '#a6c455'}
+              color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
             />
           </TouchableOpacity>
 
@@ -1464,6 +1666,220 @@ export function ChatRoom({
           setSelectedVideo(null);
         }}
       />
+
+      {/* Image Viewer Modal */}
+      <ImageViewerModal
+        visible={imageViewerVisible}
+        imageUrl={selectedImage?.url || ''}
+        imageName={selectedImage?.name}
+        onClose={() => {
+          setImageViewerVisible(false);
+          setSelectedImage(null);
+        }}
+      />
+
+      {/* Info Modal - Group Members or User Profile */}
+      <Modal
+        visible={infoModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setInfoModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.infoDialog}>
+            {/* Header */}
+            <View style={styles.infoHeader}>
+              <Text style={styles.infoTitle}>
+                {isGroup ? (selectedMemberProfile ? 'MEMBER PROFILE' : 'GROUP MEMBERS') : 'USER PROFILE'}
+              </Text>
+              <TouchableOpacity onPress={() => {
+                setInfoModalVisible(false);
+                setSelectedMemberProfile(null);
+              }}>
+                <MaterialCommunityIcons name="close" size={24} color="#a6c455" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Content */}
+            {isGroup ? (
+              selectedMemberProfile ? (
+                /* Member Profile View */
+                <View style={styles.infoContent}>
+                  <TouchableOpacity
+                    style={styles.backToListButton}
+                    onPress={() => setSelectedMemberProfile(null)}>
+                    <MaterialCommunityIcons name="arrow-left" size={20} color="#a6c455" />
+                    <Text style={styles.backToListText}>BACK TO MEMBERS</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.profileContainer}>
+                    <View style={[styles.profileAvatar, styles.directAvatar]}>
+                      <Text style={styles.profileAvatarText}>
+                        {(selectedMemberProfile.callsign || selectedMemberProfile.fullName || 'U').substring(0, 2).toUpperCase()}
+                      </Text>
+                    </View>
+
+                    <View style={styles.profileInfo}>
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="account" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>CALLSIGN</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.callsign || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="card-account-details" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>FULL NAME</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.fullName || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>RANK</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.rank || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="shield-account" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>BRANCH</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.branch || 'Not set'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                /* Group Members List */
+                <View style={styles.infoContent}>
+                  <View style={styles.infoItem}>
+                    <MaterialCommunityIcons name="account-group" size={20} color="#a6c455" />
+                    <Text style={styles.infoLabel}>
+                      {conversationMembers.length} MEMBERS
+                    </Text>
+                  </View>
+
+                  <FlatList
+                    data={conversationMembers}
+                    keyExtractor={(item) => String(item.userId)}
+                    renderItem={({item}) => {
+                      const currentMember = conversationMembers.find(m => m.userId === user?.id);
+                      const isCurrentUserAdmin = currentMember?.role === 'admin';
+                      const isMemberAdmin = item.role === 'admin';
+                      const canRemove = isCurrentUserAdmin && item.userId !== user?.id;
+
+                      return (
+                        <View style={styles.memberItem}>
+                          <TouchableOpacity
+                            style={styles.memberTouchable}
+                            onPress={() => setSelectedMemberProfile(item)}
+                            activeOpacity={0.7}>
+                            <View style={[styles.memberAvatar, styles.directAvatar]}>
+                              <Text style={styles.memberAvatarText}>
+                                {(item.callsign || item.fullName || 'U').substring(0, 2).toUpperCase()}
+                              </Text>
+                            </View>
+                            <View style={styles.memberInfo}>
+                              <View style={styles.memberNameRow}>
+                                <Text style={styles.memberName}>
+                                  {item.callsign || item.fullName || 'Unknown User'}
+                                  {item.userId === user?.id && ' (YOU)'}
+                                </Text>
+                                {isMemberAdmin && (
+                                  <View style={styles.adminBadge}>
+                                    <MaterialCommunityIcons name="shield-crown" size={12} color="#FFD700" />
+                                    <Text style={styles.adminBadgeText}>ADMIN</Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text style={styles.memberUsername}>
+                                {item.rank || 'No Rank'} • {item.branch || 'No Branch'}
+                              </Text>
+                            </View>
+                            <MaterialCommunityIcons name="chevron-right" size={20} color="#666" />
+                          </TouchableOpacity>
+                          {canRemove && (
+                            <TouchableOpacity
+                              style={styles.removeMemberButton}
+                              onPress={() => handleRemoveMember(item.userId, item.callsign || item.fullName || 'Unknown User')}
+                              activeOpacity={0.7}>
+                              <MaterialCommunityIcons name="account-remove" size={20} color="#ff4444" />
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      );
+                    }}
+                    style={styles.membersList}
+                  />
+                </View>
+              )
+            ) : (
+              /* User Profile for Direct Chat */
+              <View style={styles.infoContent}>
+                {conversationMembers
+                  .filter((member: any) => member.userId !== user?.id)
+                  .map((otherUser: any) => (
+                    <View key={otherUser.userId} style={styles.profileContainer}>
+                      <View style={[styles.profileAvatar, styles.directAvatar]}>
+                        <Text style={styles.profileAvatarText}>
+                          {(otherUser.callsign || otherUser.fullName || 'U').substring(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+
+                      <View style={styles.profileInfo}>
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="account" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>CALLSIGN</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.callsign || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="card-account-details" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>FULL NAME</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.fullName || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>RANK</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.rank || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="shield-account" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>BRANCH</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.branch || 'Not set'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+              </View>
+            )}
+
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => {
+                setInfoModalVisible(false);
+                setSelectedMemberProfile(null);
+              }}>
+              <Text style={styles.cancelButtonText}>CLOSE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -1685,26 +2101,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 4,
-    gap: 8,
-  },
-  classificationBadge: {
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: '#4d5d30',
-  },
-  classificationText: {
-    color: '#a6c455',
-    fontSize: 8,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
+    gap: 4,
   },
   messageTime: {
     color: '#888',
     fontSize: 9,
     letterSpacing: 0.3,
+  },
+  messageStatus: {
+    color: '#a6c455',
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    marginLeft: 4,
   },
   emptyContainer: {
     flex: 1,
@@ -1885,11 +2294,16 @@ const styles = StyleSheet.create({
   attachmentContainer: {
     marginBottom: 8,
   },
+  imageClickable: {
+    borderRadius: 4,
+  },
   attachmentImage: {
     width: 200,
     height: 200,
     borderRadius: 4,
     backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   videoAttachment: {
     maxWidth: 260,
@@ -1939,7 +2353,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 999,
+    elevation: 5,
   },
   attachmentMenu: {
     position: 'absolute',
@@ -1958,7 +2374,8 @@ const styles = StyleSheet.create({
     },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    elevation: 8,
+    elevation: 10,
+    zIndex: 1000,
   },
   attachmentOption: {
     flexDirection: 'row',
@@ -2199,5 +2616,147 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 11,
     lineHeight: 16,
+  },
+  infoDialog: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    padding: 16,
+    width: '90%',
+    maxHeight: '80%',
+  },
+  infoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  infoTitle: {
+    color: '#a6c455',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  infoContent: {
+    marginBottom: 16,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  infoLabel: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  infoValue: {
+    color: '#ffffff',
+    fontSize: 14,
+    marginBottom: 16,
+    marginLeft: 28,
+  },
+  membersList: {
+    maxHeight: 400,
+    marginTop: 8,
+  },
+  memberItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  memberTouchable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    padding: 12,
+  },
+  memberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    borderWidth: 2,
+  },
+  memberAvatarText: {
+    color: '#a6c455',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  memberInfo: {
+    flex: 1,
+  },
+  memberName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  memberUsername: {
+    color: '#888',
+    fontSize: 12,
+  },
+  memberNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  adminBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  adminBadgeText: {
+    color: '#FFD700',
+    fontSize: 10,
+    fontWeight: 'bold',
+    marginLeft: 2,
+  },
+  removeMemberButton: {
+    padding: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profileContainer: {
+    alignItems: 'center',
+  },
+  profileAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 3,
+  },
+  profileAvatarText: {
+    color: '#a6c455',
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  profileInfo: {
+    width: '100%',
+  },
+  backToListButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+    paddingVertical: 8,
+  },
+  backToListText: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
 });

@@ -16,21 +16,21 @@ export const STORAGE_KEYS = {
   SERVER_HOST: 'vcomm_server_host',
   SERVER_PORT: 'vcomm_server_port',
   USER_DATA: 'vcomm_user_data',
+  LICENSE_KEY: 'vcomm_license_key',
 } as const;
 
 /**
  * Get base API URL from storage or use default
  */
 export const getApiBaseUrl = async (): Promise<string> => {
-  // const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '10.0.2.2';
-  // Use local network IP to access server from real devices
-  const host = '192.168.1.15';
-  const port = '5000';
+  // Try to get saved server settings from AsyncStorage
+  const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '192.168.100.7';
+  const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';
 
-  // const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';
-
-  // Using HTTP for local development (cleartext traffic allowed in network security config)
+  // Using HTTP for local WiFi development (cleartext traffic allowed in network security config)
   const protocol = 'http';
+
+  console.log(`[API] Using server: ${protocol}://${host}:${port}`);
 
   return `${protocol}://${host}:${port}`;
 };

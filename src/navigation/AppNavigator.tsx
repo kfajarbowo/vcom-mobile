@@ -2,6 +2,8 @@ import React, {useEffect, useRef} from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {View, Text, ActivityIndicator, AppState, AppStateStatus} from 'react-native';
 import {useAuthStore} from '../store/authStore';
+import {useLicenseStore} from '../store/licenseStore';
+import {LicenseGate} from '../components/LicenseGate';
 import {AuthNavigator} from './AuthNavigator';
 import {MainNavigator} from './MainNavigator';
 import {IncomingCallModal} from '../components/IncomingCallModal';
@@ -13,8 +15,14 @@ import {useCallStore} from '../store/callStore';
 
 export function AppNavigator() {
   const {sessionToken, isLoading, initialize, user} = useAuthStore();
+  const {initialize: initializeLicense} = useLicenseStore();
   const isGroupCall = useCallStore((state: any) => state.isGroupCall);
   const appState = useRef(AppState.currentState);
+
+  // Initialize license store on mount (must happen before auth)
+  useEffect(() => {
+    initializeLicense();
+  }, []);
 
   // Initialize auth store on mount
   useEffect(() => {
@@ -71,7 +79,7 @@ export function AppNavigator() {
   }
 
   return (
-    <>
+    <LicenseGate>
       <NavigationContainer>
         {sessionToken ? <MainNavigator /> : <AuthNavigator />}
       </NavigationContainer>
@@ -84,6 +92,6 @@ export function AppNavigator() {
           {isGroupCall ? <GroupCallScreen /> : <ActiveCallScreen />}
         </>
       )}
-    </>
+    </LicenseGate>
   );
 }

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { apiRequest } from '../services/apiClient';
 import { useAuthStore } from '../store/authStore';
 
@@ -214,25 +215,7 @@ export function NewConversation({
             <View style={styles.headerDivider} />
           </View>
 
-          <TouchableOpacity
-            onPress={handleCreateConversation}
-            disabled={
-              selectedUsers.length === 0 ||
-              isCreating ||
-              (selectedUsers.length > 1 && !groupName.trim())
-            }
-            style={styles.headerButton}>
-            <Text
-              style={[
-                styles.createText,
-                (selectedUsers.length === 0 ||
-                  isCreating ||
-                  (selectedUsers.length > 1 && !groupName.trim())) &&
-                styles.disabledText,
-              ]}>
-              {isCreating ? 'WAIT...' : 'CREATE'}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.headerButton} />
         </View>
 
         {/* Search */}
@@ -313,6 +296,28 @@ export function NewConversation({
             SELECT 1 FOR DIRECT • 2+ FOR GROUP
           </Text>
         </View>
+
+        {/* Floating Action Button */}
+        {selectedUsers.length > 0 && !(selectedUsers.length > 1 && !groupName.trim()) && (
+          <TouchableOpacity
+            style={[
+              styles.fab,
+              isCreating && styles.fabDisabled,
+            ]}
+            onPress={handleCreateConversation}
+            disabled={isCreating}
+            activeOpacity={0.8}>
+            {isCreating ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <MaterialCommunityIcons
+                name="arrow-right"
+                size={28}
+                color="#ffffff"
+              />
+            )}
+          </TouchableOpacity>
+        )}
       </View>
     </Modal>
   );
@@ -358,16 +363,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#4d5d30',
     width: 50,
     marginTop: 6,
-  },
-  createText: {
-    color: '#a6c455',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-    textAlign: 'right',
-  },
-  disabledText: {
-    color: '#4a4a4a',
   },
   searchContainer: {
     backgroundColor: '#1a1a1a',
@@ -581,5 +576,30 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     textAlign: 'center',
     fontWeight: '600',
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 80,
+    right: 24,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#a6c455',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    borderWidth: 3,
+    borderColor: '#5a6b38',
+  },
+  fabDisabled: {
+    backgroundColor: '#666',
+    borderColor: '#444',
   },
 });
