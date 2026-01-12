@@ -15,17 +15,18 @@ import {
   Alert,
   BackHandler,
 } from 'react-native';
-import {launchImageLibrary} from 'react-native-image-picker';
+import {launchImageLibrary, launchCamera} from 'react-native-image-picker';
 import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useChatStore, type Message} from '../store/chatStore';
 import {useAuthStore} from '../store/authStore';
-import {apiRequest, getApiBaseUrl, downloadAndOpenPDF} from '../services/apiClient';
+import {apiRequest, getApiBaseUrl, downloadAndOpenPDF, getSessionToken} from '../services/apiClient';
 import {websocketService} from '../services/websocket';
 import {webrtcService} from '../services/webrtcService';
 import {useCallStore} from '../store/callStore';
 import {openPermissionSettings} from '../utils/permissions';
 import {VideoPlayerModal} from './VideoPlayerModal';
+import {ImageViewerModal} from './ImageViewerModal';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -78,6 +79,8 @@ export function ChatRoom({
   const [displayName, setDisplayName] = useState<string>(conversationName);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
+  const [imageViewerVisible, setImageViewerVisible] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{url: string; name: string} | null>(null);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [infoModalVisible, setInfoModalVisible] = useState(false);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
@@ -409,6 +412,43 @@ export function ChatRoom({
     );
   };
 
+  const handleCameraPicker = () => {
+    setAttachmentMenuVisible(false);
+    launchCamera(
+      {
+        mediaType: 'mixed',
+        quality: 0.8,
+        saveToPhotos: true,
+      },
+      (response) => {
+        if (response.didCancel) {
+          console.log('[ChatRoom] User cancelled camera');
+        } else if (response.errorCode) {
+          console.error('[ChatRoom] Camera Error:', response.errorMessage);
+          if (response.errorCode === 'camera_unavailable') {
+            Alert.alert('Camera Unavailable', 'Camera is not available on this device');
+          } else if (response.errorCode === 'permission') {
+            Alert.alert(
+              'Permission Required',
+              'VComm needs camera permissions to take photos and videos. Please grant permissions in your device settings.',
+              [
+                {text: 'Cancel', style: 'cancel'},
+                {
+                  text: 'Open Settings',
+                  onPress: () => openPermissionSettings(),
+                  style: 'default',
+                },
+              ]
+            );
+          }
+        } else if (response.assets && response.assets[0]) {
+          setSelectedAttachment(response.assets[0]);
+          console.log('[ChatRoom] Camera capture selected:', response.assets[0]);
+        }
+      }
+    );
+  };
+
   const handleDocumentPicker = async () => {
     setAttachmentMenuVisible(false);
     try {
@@ -442,27 +482,57 @@ export function ChatRoom({
   };
 
   const uploadAttachment = async (file: any): Promise<any> => {
-    const formData = new FormData();
-    formData.append('file', {
-      uri: file.uri,
-      type: file.type || 'application/octet-stream',
-      name: file.fileName || 'attachment',
-    } as any);
+    try {
+      const formData = new FormData();
+      formData.append('file', {
+        uri: file.uri,
+        type: file.type || 'application/octet-stream',
+        name: file.fileName || 'attachment',
+      } as any);
 
-    const baseUrl = await getApiBaseUrl();
-    const response = await fetch(`${baseUrl}/api/attachments/upload`, {
-      method: 'POST',
-      body: formData,
-      headers: {
+      const baseUrl = await getApiBaseUrl();
+      const sessionToken = await getSessionToken();
+
+      console.log('[ChatRoom] Uploading attachment to:', `${baseUrl}/api/attachments/upload`);
+      console.log('[ChatRoom] File details:', {
+        uri: file.uri,
+        type: file.type,
+        name: file.fileName,
+      });
+
+      const headers: Record<string, string> = {
         'Content-Type': 'multipart/form-data',
-      },
-    });
+      };
 
-    if (!response.ok) {
-      throw new Error('Failed to upload attachment');
+      // Add session token for authentication
+      if (sessionToken) {
+        headers['X-Session-Token'] = sessionToken;
+        console.log('[ChatRoom] Added X-Session-Token header for upload');
+      } else {
+        console.warn('[ChatRoom] No session token found for upload');
+      }
+
+      const response = await fetch(`${baseUrl}/api/attachments/upload`, {
+        method: 'POST',
+        body: formData,
+        headers,
+      });
+
+      console.log('[ChatRoom] Upload response status:', response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[ChatRoom] Upload failed:', errorText);
+        throw new Error(`Failed to upload attachment: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log('[ChatRoom] Upload successful:', result);
+      return result;
+    } catch (error) {
+      console.error('[ChatRoom] Upload error:', error);
+      throw error;
     }
-
-    return await response.json();
   };
 
   const sendMessage = async () => {
@@ -522,12 +592,37 @@ export function ChatRoom({
       setSelectedAttachment(null);
       setReplyToMessage(null);
 
-      // Reload messages immediately to show the new message (without showing loading spinner)
+      // Wait a moment before reloading to ensure server has fully processed the message
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Reload messages to show the new message (without showing loading spinner)
       await loadMessages(false);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('[ChatRoom] Error sending message:', error);
       setMessageText(content);
+
+      // Show user-friendly error message
+      const errorMessage = error?.message || 'Failed to send message';
+      if (errorMessage.includes('Network request failed')) {
+        Alert.alert(
+          'Network Error',
+          'Unable to connect to the server. Please check your network connection and try again.',
+          [{text: 'OK'}]
+        );
+      } else if (errorMessage.includes('upload attachment')) {
+        Alert.alert(
+          'Upload Failed',
+          'Failed to upload attachment. Please try again or choose a different file.',
+          [{text: 'OK'}]
+        );
+      } else {
+        Alert.alert(
+          'Error',
+          errorMessage,
+          [{text: 'OK'}]
+        );
+      }
     } finally {
       setIsSending(false);
     }
@@ -871,8 +966,13 @@ export function ChatRoom({
 
     // Get full attachment URL
     const getFullAttachmentUrl = (url: string | undefined) => {
-      if (!url || !baseUrl) {
-        console.log('[ChatRoom] getFullAttachmentUrl - missing url or baseUrl:', {url, baseUrl});
+      if (!url) {
+        console.log('[ChatRoom] getFullAttachmentUrl - missing url');
+        return '';
+      }
+      if (!baseUrl) {
+        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet, returning relative url:', url);
+        // If baseUrl isn't loaded yet, return empty and wait for re-render
         return '';
       }
       if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -923,18 +1023,45 @@ export function ChatRoom({
           {item.hasAttachment && item.attachmentUrl && (
             <View style={styles.attachmentContainer}>
               {item.attachmentType === 'image' ? (
-                <Image
-                  source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
-                  style={styles.attachmentImage}
-                  resizeMode="cover"
-                  onError={(error) => {
-                    console.log('[ChatRoom] Image load error:', error.nativeEvent);
-                    console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
-                  }}
-                  onLoad={() => {
-                    console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
-                  }}
-                />
+                baseUrl ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                      console.log('[ChatRoom] Image clicked, fullUrl:', fullUrl);
+                      console.log('[ChatRoom] baseUrl:', baseUrl);
+                      console.log('[ChatRoom] item.attachmentUrl:', item.attachmentUrl);
+                      if (fullUrl) {
+                        setSelectedImage({
+                          url: fullUrl,
+                          name: item.attachmentName || 'Image',
+                        });
+                        setImageViewerVisible(true);
+                      } else {
+                        console.warn('[ChatRoom] Full URL is empty, cannot open image viewer');
+                      }
+                    }}
+                    activeOpacity={0.8}
+                    style={styles.imageClickable}
+                    disabled={false}>
+                    <Image
+                      source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
+                      style={styles.attachmentImage}
+                      resizeMode="cover"
+                      pointerEvents="none"
+                      onError={(error) => {
+                        console.log('[ChatRoom] Image load error:', error.nativeEvent);
+                        console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
+                      }}
+                      onLoad={() => {
+                        console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
+                      }}
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.attachmentImage}>
+                    <ActivityIndicator size="small" color="#a6c455" />
+                  </View>
+                )
               ) : item.attachmentType === 'video' ? (
                 <TouchableOpacity
                   style={styles.videoAttachment}
@@ -1145,6 +1272,7 @@ export function ChatRoom({
         <FlatList
           ref={flatListRef}
           data={groupedMessages}
+          extraData={`${messages.length}-${baseUrl}`}
           renderItem={({item: group}) => (
             <View>
               {renderDateSeparator(group.date)}
@@ -1271,6 +1399,16 @@ export function ChatRoom({
         {/* Attachment Menu */}
         {attachmentMenuVisible && (
           <View style={styles.attachmentMenu}>
+            <TouchableOpacity
+              style={styles.attachmentOption}
+              onPress={handleCameraPicker}
+              activeOpacity={0.7}>
+              <View style={styles.attachmentOptionIcon}>
+                <MaterialCommunityIcons name="camera" size={24} color="#d9a870" />
+              </View>
+              <Text style={styles.attachmentOptionText}>Camera</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.attachmentOption}
               onPress={handleImageVideoPicker}
@@ -1526,6 +1664,17 @@ export function ChatRoom({
         onClose={() => {
           setVideoPlayerVisible(false);
           setSelectedVideo(null);
+        }}
+      />
+
+      {/* Image Viewer Modal */}
+      <ImageViewerModal
+        visible={imageViewerVisible}
+        imageUrl={selectedImage?.url || ''}
+        imageName={selectedImage?.name}
+        onClose={() => {
+          setImageViewerVisible(false);
+          setSelectedImage(null);
         }}
       />
 
@@ -2145,11 +2294,16 @@ const styles = StyleSheet.create({
   attachmentContainer: {
     marginBottom: 8,
   },
+  imageClickable: {
+    borderRadius: 4,
+  },
   attachmentImage: {
     width: 200,
     height: 200,
     borderRadius: 4,
     backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   videoAttachment: {
     maxWidth: 260,

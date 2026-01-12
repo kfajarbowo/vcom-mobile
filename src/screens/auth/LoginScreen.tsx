@@ -1,12 +1,15 @@
-import React, {useState} from 'react';
-import {View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, StyleSheet} from 'react-native';
+import React, {useState, useEffect} from 'react';
+import {View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, StyleSheet, TouchableOpacity} from 'react-native';
 import {useForm, Controller} from 'react-hook-form';
 import {zodResolver} from '@hookform/resolvers/zod';
 import {z} from 'zod';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Button, Input} from '../../components/ui';
 import {authService} from '../../services/authService';
 import {useAuthStore} from '../../store/authStore';
+import {setApiServer, STORAGE_KEYS} from '../../services/apiClient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {AuthStackParamList} from '../../navigation/AuthNavigator';
 
 const loginSchema = z.object({
@@ -20,7 +23,39 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
 export function LoginScreen({navigation}: Props) {
   const [isLoading, setIsLoading] = useState(false);
+  const [showServerSettings, setShowServerSettings] = useState(false);
+  const [serverHost, setServerHost] = useState('192.168.100.7');
+  const [serverPort, setServerPort] = useState('5000');
   const {setUser, setSessionToken} = useAuthStore();
+
+  // Load saved server settings on mount
+  useEffect(() => {
+    loadServerSettings();
+  }, []);
+
+  const loadServerSettings = async () => {
+    try {
+      const savedHost = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST);
+      const savedPort = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT);
+
+      if (savedHost) setServerHost(savedHost);
+      if (savedPort) setServerPort(savedPort);
+
+      console.log('[Login] Loaded server settings:', {host: savedHost, port: savedPort});
+    } catch (error) {
+      console.error('[Login] Error loading server settings:', error);
+    }
+  };
+
+  const handleServerSettingsSave = async () => {
+    try {
+      await setApiServer(serverHost, serverPort);
+      Alert.alert('Success', `Server set to ${serverHost}:${serverPort}`, [{text: 'OK'}]);
+      setShowServerSettings(false);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save server settings');
+    }
+  };
 
   const {
     control,
@@ -67,8 +102,9 @@ export function LoginScreen({navigation}: Props) {
         suggestions.push('Check your callsign and password');
         suggestions.push('Callsign is case-sensitive');
       } else if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
-        suggestions.push('Check your internet connection');
-        suggestions.push('Verify server is running at 31.97.50.227:5000');
+        suggestions.push('Check your WiFi connection');
+        suggestions.push(`Verify server is running at ${serverHost}:${serverPort}`);
+        suggestions.push('Tap SERVER SETTINGS above to configure');
       } else if (errorMessage.includes('No session token')) {
         suggestions.push('Server authentication error');
         suggestions.push('Contact system administrator');
@@ -108,6 +144,77 @@ export function LoginScreen({navigation}: Props) {
             </View>
 
             <View style={styles.formContainer}>
+              {/* Server Settings Section */}
+              <TouchableOpacity
+                style={styles.serverSettingsToggle}
+                onPress={() => setShowServerSettings(!showServerSettings)}
+                activeOpacity={0.7}>
+                <View style={styles.serverSettingsHeader}>
+                  <MaterialCommunityIcons
+                    name="server-network"
+                    size={20}
+                    color="#a6c455"
+                  />
+                  <Text style={styles.serverSettingsTitle}>
+                    SERVER SETTINGS
+                  </Text>
+                  <Text style={styles.serverSettingsSubtitle}>
+                    {serverHost}:{serverPort}
+                  </Text>
+                </View>
+                <MaterialCommunityIcons
+                  name={showServerSettings ? 'chevron-up' : 'chevron-down'}
+                  size={24}
+                  color="#666"
+                />
+              </TouchableOpacity>
+
+              {showServerSettings && (
+                <View style={styles.serverSettingsContent}>
+                  <Text style={styles.serverSettingsInfo}>
+                    Configure the local WiFi server address
+                  </Text>
+
+                  <View style={styles.fieldContainer}>
+                    <Text style={styles.label}>SERVER HOST / IP ADDRESS</Text>
+                    <Input
+                      placeholder="192.168.x.x"
+                      value={serverHost}
+                      onChangeText={setServerHost}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+
+                  <View style={styles.fieldContainer}>
+                    <Text style={styles.label}>SERVER PORT</Text>
+                    <Input
+                      placeholder="5000"
+                      value={serverPort}
+                      onChangeText={setServerPort}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="number-pad"
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.saveServerButton}
+                    onPress={handleServerSettingsSave}
+                    activeOpacity={0.8}>
+                    <MaterialCommunityIcons
+                      name="content-save"
+                      size={20}
+                      color="#ffffff"
+                    />
+                    <Text style={styles.saveServerButtonText}>SAVE SERVER SETTINGS</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.serverSettingsDivider} />
+                </View>
+              )}
+
               <Controller
                 control={control}
                 name="callsign"
@@ -281,5 +388,74 @@ const styles = StyleSheet.create({
     marginTop: 32,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  serverSettingsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    marginBottom: 16,
+  },
+  serverSettingsHeader: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  serverSettingsTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#a6c455',
+    letterSpacing: 1,
+  },
+  serverSettingsSubtitle: {
+    fontSize: 10,
+    color: '#666',
+    letterSpacing: 0.5,
+    marginLeft: 'auto',
+  },
+  serverSettingsContent: {
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    marginBottom: 16,
+  },
+  serverSettingsInfo: {
+    fontSize: 11,
+    color: '#888',
+    textAlign: 'center',
+    marginBottom: 16,
+    letterSpacing: 0.5,
+  },
+  saveServerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4d5d30',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#5a6b38',
+    marginTop: 8,
+    gap: 8,
+  },
+  saveServerButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  serverSettingsDivider: {
+    height: 2,
+    backgroundColor: '#4d5d30',
+    marginTop: 20,
+    marginBottom: 8,
   },
 });
