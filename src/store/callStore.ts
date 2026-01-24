@@ -1,5 +1,5 @@
-import {create} from 'zustand';
-import {MediaStream} from 'react-native-webrtc';
+import { create } from 'zustand';
+import { MediaStream } from 'react-native-webrtc';
 
 export type CallType = 'audio' | 'video';
 export type CallStatus = 'idle' | 'calling' | 'ringing' | 'active' | 'ended';
@@ -62,6 +62,8 @@ export interface CallState {
   }) => void;
   setLocalStream: (stream: MediaStream | null) => void;
   setRemoteStream: (stream: MediaStream | null) => void;
+  setOffer: (offer: any) => void;
+  setCallType: (callType: CallType) => void;
   toggleMute: () => void;
   toggleVideo: () => void;
   toggleSpeaker: () => void;
@@ -82,7 +84,7 @@ export interface CallState {
     callerUserId: number;
     conversationId: number;
     groupName: string;
-    participants: {userId: number; userName: string}[];
+    participants: { userId: number; userName: string }[];
   }) => void;
   addParticipant: (userId: number, userName: string, stream?: MediaStream) => void;
   removeParticipant: (userId: number) => void;
@@ -117,9 +119,9 @@ const initialState = {
 export const useCallStore: any = create<CallState>((set) => ({
   ...initialState,
 
-  setCallStatus: (status) => set({status}),
+  setCallStatus: (status) => set({ status }),
 
-  startCall: ({callId, callType, receiverUserId, receiverName, conversationId}) =>
+  startCall: ({ callId, callType, receiverUserId, receiverName, conversationId }) =>
     set({
       callId,
       callType,
@@ -131,7 +133,7 @@ export const useCallStore: any = create<CallState>((set) => ({
       isVideoEnabled: callType === 'video',
     }),
 
-  receiveCall: ({callId, callType, callerUserId, callerName, conversationId, offer}) =>
+  receiveCall: ({ callId, callType, callerUserId, callerName, conversationId, offer }) =>
     set({
       callId,
       callType,
@@ -144,9 +146,13 @@ export const useCallStore: any = create<CallState>((set) => ({
       isVideoEnabled: callType === 'video',
     }),
 
-  setLocalStream: (stream) => set({localStream: stream}),
+  setLocalStream: (stream) => set({ localStream: stream }),
 
-  setRemoteStream: (stream) => set({remoteStream: stream}),
+  setRemoteStream: (stream) => set({ remoteStream: stream }),
+
+  setOffer: (offer) => set({ offer }),
+
+  setCallType: (callType) => set({ callType, isVideoEnabled: callType === 'video' }),
 
   toggleMute: () =>
     set((state) => {
@@ -155,7 +161,7 @@ export const useCallStore: any = create<CallState>((set) => ({
           track.enabled = !state.isMuted; // Fixed: Added negation to match toggleVideo logic
         });
       }
-      return {isMuted: !state.isMuted};
+      return { isMuted: !state.isMuted };
     }),
 
   toggleVideo: () =>
@@ -165,17 +171,17 @@ export const useCallStore: any = create<CallState>((set) => ({
           track.enabled = !state.isVideoEnabled;
         });
       }
-      return {isVideoEnabled: !state.isVideoEnabled};
+      return { isVideoEnabled: !state.isVideoEnabled };
     }),
 
   toggleSpeaker: () =>
     set((state) => {
       const newSpeakerState = !state.isSpeakerEnabled;
       // Import dynamically to avoid circular dependency
-      import('../services/webrtcService').then(({webrtcService}) => {
+      import('../services/webrtcService').then(({ webrtcService }) => {
         webrtcService.setSpeakerPhone(newSpeakerState);
       });
-      return {isSpeakerEnabled: newSpeakerState};
+      return { isSpeakerEnabled: newSpeakerState };
     }),
 
   endCall: () =>
@@ -200,7 +206,7 @@ export const useCallStore: any = create<CallState>((set) => ({
   reset: () => set(initialState),
 
   // Group call actions
-  startGroupCall: ({callId, callType, participantIds, conversationId, groupName}) =>
+  startGroupCall: ({ callId, callType, participantIds, conversationId, groupName }) =>
     set({
       callId,
       callType,
@@ -213,10 +219,10 @@ export const useCallStore: any = create<CallState>((set) => ({
       participants: new Map(),
     }),
 
-  receiveGroupCall: ({callId, callType, callerUserId, conversationId, groupName, participants}) =>
+  receiveGroupCall: ({ callId, callType, callerUserId, conversationId, groupName, participants }) =>
     set((state) => {
       const participantMap = new Map<number, Participant>();
-      participants.forEach(({userId, userName}) => {
+      participants.forEach(({ userId, userName }) => {
         participantMap.set(userId, {
           userId,
           userName,
@@ -243,14 +249,22 @@ export const useCallStore: any = create<CallState>((set) => ({
   addParticipant: (userId, userName, stream) =>
     set((state) => {
       const newParticipants = new Map(state.participants);
-      newParticipants.set(userId, {
-        userId,
-        userName,
-        stream: stream || null,
-        isMuted: false,
-        isVideoEnabled: state.callType === 'video',
-      });
-      return {participants: newParticipants};
+      const existingParticipant = newParticipants.get(userId);
+
+      // If participant exists (e.g., stream arrived first), update their name
+      // Otherwise create new participant
+      const updatedParticipant = existingParticipant
+        ? { ...existingParticipant, userName, stream: stream || existingParticipant.stream }
+        : {
+          userId,
+          userName,
+          stream: stream || null,
+          isMuted: false,
+          isVideoEnabled: state.callType === 'video',
+        };
+
+      newParticipants.set(userId, updatedParticipant);
+      return { participants: newParticipants };
     }),
 
   removeParticipant: (userId) =>
@@ -261,18 +275,28 @@ export const useCallStore: any = create<CallState>((set) => ({
         participant.stream.getTracks().forEach((track) => track.stop());
       }
       newParticipants.delete(userId);
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   updateParticipantStream: (userId, stream) =>
     set((state) => {
       const newParticipants = new Map(state.participants);
-      const participant = newParticipants.get(userId);
-      if (participant) {
-        participant.stream = stream;
-        newParticipants.set(userId, participant);
-      }
-      return {participants: newParticipants};
+      const existingParticipant = newParticipants.get(userId);
+
+      // Create new participant object (not mutate) for proper Zustand change detection
+      // Also create participant if they don't exist yet (stream may arrive before participant_joined)
+      const updatedParticipant = existingParticipant
+        ? { ...existingParticipant, stream }
+        : {
+          userId,
+          userName: `User ${userId}`, // Placeholder name until proper name arrives
+          stream,
+          isMuted: false,
+          isVideoEnabled: state.callType === 'video',
+        };
+
+      newParticipants.set(userId, updatedParticipant);
+      return { participants: newParticipants };
     }),
 
   updateParticipantAudio: (userId, isMuted) =>
@@ -280,10 +304,10 @@ export const useCallStore: any = create<CallState>((set) => ({
       const newParticipants = new Map(state.participants);
       const participant = newParticipants.get(userId);
       if (participant) {
-        participant.isMuted = isMuted;
-        newParticipants.set(userId, participant);
+        // Create new object for proper Zustand change detection
+        newParticipants.set(userId, { ...participant, isMuted });
       }
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   updateParticipantVideo: (userId, isVideoEnabled) =>
@@ -291,10 +315,10 @@ export const useCallStore: any = create<CallState>((set) => ({
       const newParticipants = new Map(state.participants);
       const participant = newParticipants.get(userId);
       if (participant) {
-        participant.isVideoEnabled = isVideoEnabled;
-        newParticipants.set(userId, participant);
+        // Create new object for proper Zustand change detection
+        newParticipants.set(userId, { ...participant, isVideoEnabled });
       }
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   getParticipant: (userId) => {

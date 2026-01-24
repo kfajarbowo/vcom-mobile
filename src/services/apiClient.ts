@@ -24,7 +24,7 @@ export const STORAGE_KEYS = {
  */
 export const getApiBaseUrl = async (): Promise<string> => {
   // Try to get saved server settings from AsyncStorage
-  const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '192.168.100.7';
+  const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '192.168.204.105';
   const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';
 
   // Using HTTP for local WiFi development (cleartext traffic allowed in network security config)
@@ -243,6 +243,131 @@ export const downloadAndOpenPDF = async (
     // Provide more helpful error messages
     if (error.message?.includes('No Activity found') || error.message?.includes('No PDF viewer')) {
       throw new Error('No PDF viewer app found. Please install a PDF viewer from the Play Store.');
+    } else if (error.message?.includes('Permission denied') || error.message?.includes('EACCES')) {
+      throw new Error('Permission denied. Please grant storage permissions in Settings.');
+    } else if (error.message?.includes('Network') || error.message?.includes('timeout')) {
+      throw new Error('Network error. Please check your connection and try again.');
+    } else {
+      throw error;
+    }
+  }
+};
+
+/**
+ * Get MIME type based on file extension
+ */
+const getMimeType = (fileName: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop();
+  const mimeTypes: Record<string, string> = {
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain',
+    csv: 'text/csv',
+  };
+  return mimeTypes[ext || ''] || 'application/octet-stream';
+};
+
+/**
+ * Download and open a document file with authentication (supports PDF, Word, Excel, PowerPoint, etc.)
+ */
+export const downloadAndOpenDocument = async (
+  fileUrl: string,
+  fileName: string,
+): Promise<void> => {
+  try {
+    console.log('[API] Downloading document:', fileUrl, fileName);
+
+    // Get session token
+    const sessionToken = await getSessionToken();
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'X-Session-Token': sessionToken || '',
+    };
+
+    // Configure download - use cache directory for better Android compatibility
+    const {config, fs, android, ios} = RNFetchBlob;
+
+    // For Android, use cache directory to avoid scoped storage issues
+    // For iOS, use documents directory
+    const downloadDir = Platform.OS === 'ios' ? fs.dirs.DocumentDir : fs.dirs.CacheDir;
+    const filePath = `${downloadDir}/${fileName}`;
+
+    console.log('[API] Downloading to:', filePath);
+
+    // Download file with authentication
+    const response = await config({
+      fileCache: true,
+      path: filePath,
+    }).fetch('GET', fileUrl, headers);
+
+    const downloadedPath = response.path();
+    console.log('[API] Download complete:', downloadedPath);
+
+    // Verify the file was downloaded successfully
+    const fileExists = await fs.exists(downloadedPath);
+    console.log('[API] File exists:', fileExists);
+
+    if (!fileExists) {
+      throw new Error('File download failed - file does not exist');
+    }
+
+    // Check file size to ensure it's not empty or an error page
+    const stat = await fs.stat(downloadedPath);
+    console.log('[API] File size:', stat.size, 'bytes');
+
+    if (stat.size < 100) {
+      throw new Error('Downloaded file is too small - might be an error response');
+    }
+
+    // Get MIME type based on file extension
+    const mimeType = getMimeType(fileName);
+    console.log('[API] MIME type:', mimeType);
+
+    // Open the file with system viewer
+    if (Platform.OS === 'android') {
+      try {
+        console.log('[API] Opening document with custom FileOpener module...');
+
+        // Use our custom native module with proper FileProvider support
+        await FileOpener.openFile(downloadedPath, mimeType);
+
+        console.log('[API] FileOpener succeeded - "Open with" dialog should appear');
+      } catch (openerError: any) {
+        console.error('[API] FileOpener failed:', openerError);
+
+        // Fallback: Try using RNFetchBlob's actionViewIntent
+        try {
+          console.log('[API] Trying RNFetchBlob Intent as fallback...');
+          await android.actionViewIntent(downloadedPath, mimeType);
+          console.log('[API] Intent sent');
+        } catch (intentError: any) {
+          console.error('[API] Intent also failed:', intentError);
+          throw new Error(`Unable to open document. Please install an app that can open ${fileName.split('.').pop()?.toUpperCase()} files.`);
+        }
+      }
+    } else {
+      // iOS
+      try {
+        console.log('[API] Opening document on iOS...');
+        await ios.openDocument(downloadedPath);
+        console.log('[API] Successfully opened document on iOS');
+      } catch (iosError) {
+        console.error('[API] iOS openDocument failed:', iosError);
+        throw new Error(`Failed to open document. Please ensure you have an app installed that can open ${fileName.split('.').pop()?.toUpperCase()} files.`);
+      }
+    }
+  } catch (error: any) {
+    console.error('[API] Failed to download/open document:', error);
+
+    // Provide more helpful error messages
+    if (error.message?.includes('No Activity found')) {
+      throw new Error('No suitable app found to open this document. Please install an appropriate viewer app.');
     } else if (error.message?.includes('Permission denied') || error.message?.includes('EACCES')) {
       throw new Error('Permission denied. Please grant storage permissions in Settings.');
     } else if (error.message?.includes('Network') || error.message?.includes('timeout')) {

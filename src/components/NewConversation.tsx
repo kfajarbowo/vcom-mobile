@@ -311,9 +311,9 @@ export function NewConversation({
               <ActivityIndicator size="small" color="#ffffff" />
             ) : (
               <MaterialCommunityIcons
-                name="arrow-right"
+                name="message-plus"
                 size={28}
-                color="#ffffff"
+                color="#a6c455"
               />
             )}
           </TouchableOpacity>
@@ -584,7 +584,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#a6c455',
+    backgroundColor: '#4d5d30',
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 8,
@@ -593,7 +593,7 @@ const styles = StyleSheet.create({
       width: 0,
       height: 4,
     },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.5,
     shadowRadius: 8,
     borderWidth: 3,
     borderColor: '#5a6b38',

@@ -459,8 +459,34 @@ export class GroupCallService {
         return;
       }
 
+      // Check if connection is closed (may have been replaced during glare)
+      if ((peerConnection.signalingState as string) === 'closed') {
+        console.warn('[WebRTC Group] ⚠️ Peer connection is closed, ignoring stale answer from:', fromUserId);
+        return;
+      }
+
       console.log('[WebRTC Group] Current signaling state:', peerConnection.signalingState);
-      console.log('[WebRTC Group] Transceivers before setting answer:', peerConnection.getTransceivers().length);
+
+      // Validate transceivers before attempting to set remote description
+      const transceivers = peerConnection.getTransceivers();
+      console.log('[WebRTC Group] Transceivers before setting answer:', transceivers.length);
+
+      // Check for invalid transceivers (can happen if connection was replaced during glare)
+      const hasInvalidTransceivers = transceivers.some((t: any) => {
+        try {
+          return !t || !t.receiver;
+        } catch {
+          return true;
+        }
+      });
+
+      if (hasInvalidTransceivers) {
+        console.warn('[WebRTC Group] ⚠️ Invalid transceivers detected, connection may have been replaced during glare');
+        console.warn('[WebRTC Group] Recreating connection and sending new offer to:', fromUserId);
+        // Recreate the connection - this will trigger a new offer
+        await this.createGroupOffer(fromUserId);
+        return;
+      }
 
       if (peerConnection.signalingState === 'have-local-offer') {
         try {
@@ -469,10 +495,17 @@ export class GroupCallService {
           console.log('[WebRTC Group] Transceivers after setting answer:', peerConnection.getTransceivers().length);
 
           this.addGroupPendingIceCandidates(fromUserId);
-        } catch (setRemoteError) {
+        } catch (setRemoteError: any) {
           console.error('[WebRTC Group] ❌ Error setting remote description (answer):', setRemoteError);
+
+          // Handle transceiver/receiver errors by recreating the connection
+          if (setRemoteError?.message?.includes('receiver') || setRemoteError?.message?.includes('transceiver')) {
+            console.warn('[WebRTC Group] ⚠️ Transceiver error detected, recreating connection to:', fromUserId);
+            await this.createGroupOffer(fromUserId);
+            return;
+          }
+
           console.error('[WebRTC Group] Answer SDP:', answer.sdp?.substring(0, 200) + '...');
-          throw setRemoteError;
         }
       } else if (peerConnection.signalingState === 'stable') {
         console.warn('[WebRTC Group] ⚠️ Peer connection already stable, ignoring answer from:', fromUserId);

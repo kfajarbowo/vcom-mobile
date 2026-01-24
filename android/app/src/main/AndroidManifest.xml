@@ -8,6 +8,17 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
+    <!-- Call notification permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -43,5 +54,51 @@
           android:name="android.support.FILE_PROVIDER_PATHS"
           android:resource="@xml/file_paths" />
       </provider>
+
+      <!-- Incoming Call Full-Screen Activity -->
+      <activity
+        android:name=".IncomingCallActivity"
+        android:theme="@style/IncomingCallTheme"
+        android:launchMode="singleInstance"
+        android:excludeFromRecents="true"
+        android:showOnLockScreen="true"
+        android:showWhenLocked="true"
+        android:turnScreenOn="true"
+        android:taskAffinity=""
+        android:exported="false" />
+
+      <!-- Gotify Foreground Service -->
+      <service
+        android:name=".GotifyForegroundService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="phoneCall" />
+
+      <!-- Headless JS Task Service for background call handling -->
+      <service
+        android:name=".CallHeadlessTaskService"
+        android:enabled="true"
+        android:exported="false" />
+
+      <!-- Broadcast Receiver for notification actions -->
+      <receiver
+        android:name=".CallActionReceiver"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.vcommmobile.ACCEPT_CALL" />
+          <action android:name="com.vcommmobile.REJECT_CALL" />
+        </intent-filter>
+      </receiver>
+
+      <!-- Boot Receiver to restart foreground service -->
+      <receiver
+        android:name=".BootReceiver"
+        android:enabled="true"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="android.intent.action.BOOT_COMPLETED" />
+          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        </intent-filter>
+      </receiver>
     </application>
 </manifest>

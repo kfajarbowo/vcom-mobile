@@ -1,14 +1,32 @@
-import React from 'react';
+import React, {useEffect} from 'react';
 import {View, Text, Modal, TouchableOpacity, StyleSheet} from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Participant, useCallStore} from '../store/callStore';
 import {webrtcService} from '../services/webrtcService';
+import {callNotificationService} from '../services/callNotificationService';
 
 export function IncomingCallModal() {
   const {status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants} = useCallStore();
 
   const isVisible = status === 'ringing';
   const participants = getAllParticipants();
+
+  // Cancel native notification when modal becomes visible (app is in foreground)
+  useEffect(() => {
+    if (isVisible) {
+      console.log('[IncomingCallModal] Visible, canceling native notification');
+      callNotificationService.cancelCallNotification();
+    }
+  }, [isVisible]);
+
+  // Report call ended to CallKit when call ends (iOS)
+  useEffect(() => {
+    if (status === 'ended' || status === 'idle') {
+      callNotificationService.reportCallEnded();
+    } else if (status === 'active') {
+      callNotificationService.reportCallConnected();
+    }
+  }, [status]);
 
   const handleAccept = async () => {
     try {

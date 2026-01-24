@@ -1,16 +1,24 @@
 import React, {useState, useEffect} from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView} from 'react-native';
+import {View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, ActivityIndicator} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useAuthStore} from '../../store/authStore';
 import {Input} from '../../components/ui';
-import {setApiServer, STORAGE_KEYS} from '../../services/apiClient';
+import {setApiServer, STORAGE_KEYS, apiClient} from '../../services/apiClient';
+import {callNotificationService} from '../../services/callNotificationService';
 
 export function SettingsScreen() {
   const {user, logout} = useAuthStore();
   const [serverHost, setServerHost] = useState('192.168.100.7');
   const [serverPort, setServerPort] = useState('5000');
   const [isEditing, setIsEditing] = useState(false);
+
+  // Gotify settings state
+  const [gotifyUrl, setGotifyUrl] = useState('');
+  const [gotifyToken, setGotifyToken] = useState('');
+  const [isEditingGotify, setIsEditingGotify] = useState(false);
+  const [gotifyServiceEnabled, setGotifyServiceEnabled] = useState(false);
+  const [isLoadingGotify, setIsLoadingGotify] = useState(false);
 
   // Load saved server settings on mount
   useEffect(() => {
@@ -174,7 +182,7 @@ export function SettingsScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>SYSTEM ACTIONS</Text>
           <TouchableOpacity style={styles.logoutButton} onPress={logout}>
-            <Text style={styles.logoutIcon}>⏻</Text>
+            <MaterialCommunityIcons name="logout" size={22} color="#d97070" style={styles.logoutIcon} />
             <Text style={styles.logoutText}>TERMINATE SESSION</Text>
           </TouchableOpacity>
         </View>
@@ -264,7 +272,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoutIcon: {
-    fontSize: 20,
     marginRight: 12,
   },
   logoutText: {

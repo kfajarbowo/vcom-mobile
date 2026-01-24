@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, Dimensions } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -19,11 +19,15 @@ export function GroupCallScreen() {
     toggleMute,
     toggleVideo,
     toggleSpeaker,
-    getAllParticipants,
+    participants: participantsMap,
   } = useCallStore();
 
   const [callDuration, setCallDuration] = useState(0);
-  const participants = getAllParticipants();
+
+  // Convert Map to array for rendering - this now properly subscribes to participantsMap changes
+  const participants = useMemo(() => {
+    return Array.from(participantsMap.values());
+  }, [participantsMap]);
 
   const isVisible = status === 'calling' || status === 'active';
 
@@ -69,6 +73,10 @@ export function GroupCallScreen() {
     const tileWidth = SCREEN_WIDTH / tilesPerRow - 16;
     const tileHeight = participantCount === 1 ? SCREEN_HEIGHT * 0.5 : SCREEN_HEIGHT / 3;
 
+    // Check if participant has video enabled and has a stream with video tracks
+    const hasVideoStream = participant.stream && participant.stream.getVideoTracks().length > 0;
+    const isParticipantVideoEnabled = participant.isVideoEnabled !== false && hasVideoStream;
+
     return (
       <View
         key={participant.userId}
@@ -79,7 +87,7 @@ export function GroupCallScreen() {
             height: tileHeight,
           },
         ]}>
-        {callType === 'video' && participant.stream ? (
+        {callType === 'video' && isParticipantVideoEnabled ? (
           <RTCView
             streamURL={participant.stream.toURL()}
             style={styles.participantVideo}
@@ -89,12 +97,25 @@ export function GroupCallScreen() {
         ) : (
           <View style={styles.participantAvatar}>
             <MaterialCommunityIcons name="account" size={60} color="#a6c455" />
+            {callType === 'video' && !isParticipantVideoEnabled && (
+              <View style={styles.cameraOffBadge}>
+                <MaterialCommunityIcons name="video-off" size={20} color="#ff4444" />
+              </View>
+            )}
           </View>
         )}
 
         {/* Participant Info Overlay */}
         <View style={styles.participantInfo}>
           <Text style={styles.participantName}>{participant.userName}</Text>
+          {!isParticipantVideoEnabled && callType === 'video' && (
+            <MaterialCommunityIcons
+              name="video-off"
+              size={16}
+              color="#ff4444"
+              style={styles.statusIcon}
+            />
+          )}
           {participant.isMuted && (
             <MaterialCommunityIcons
               name="microphone-off"
@@ -139,15 +160,27 @@ export function GroupCallScreen() {
         </ScrollView>
 
         {/* Local Video (Picture in Picture) */}
-        {callType === 'video' && localStream && (
+        {callType === 'video' && (
           <View style={styles.localVideoContainer} pointerEvents="box-none">
-            <RTCView
-              streamURL={localStream.toURL()}
-              style={styles.localVideo}
-              objectFit="cover"
-              mirror={true}
-              zOrder={1}
-            />
+            {isVideoEnabled && localStream ? (
+              <RTCView
+                streamURL={localStream.toURL()}
+                style={styles.localVideo}
+                objectFit="cover"
+                mirror={true}
+                zOrder={1}
+              />
+            ) : (
+              <View style={styles.localVideoDisabled}>
+                <MaterialCommunityIcons name="account" size={40} color="#a6c455" />
+                <MaterialCommunityIcons
+                  name="video-off"
+                  size={16}
+                  color="#ff4444"
+                  style={styles.localCameraOffIcon}
+                />
+              </View>
+            )}
             <Text style={styles.localLabel}>YOU</Text>
           </View>
         )}
@@ -269,6 +302,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  cameraOffBadge: {
+    position: 'absolute',
+    bottom: 50,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    padding: 4,
+  },
   participantInfo: {
     position: 'absolute',
     bottom: 0,
@@ -306,6 +346,17 @@ const styles = StyleSheet.create({
   localVideo: {
     width: '100%',
     height: '100%',
+  },
+  localVideoDisabled: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  localCameraOffIcon: {
+    position: 'absolute',
+    bottom: 30,
   },
   localLabel: {
     position: 'absolute',

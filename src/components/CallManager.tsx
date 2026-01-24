@@ -1,20 +1,68 @@
-import {useEffect} from 'react';
-import {websocketService, WebSocketMessage} from '../services/websocket';
-import {webrtcService} from '../services/webrtcService';
-import {useCallStore} from '../store/callStore';
-import {useAuthStore} from '../store/authStore';
-import {useToast} from './Toast';
+import { useEffect } from 'react';
+import { AppState } from 'react-native';
+import { websocketService, WebSocketMessage } from '../services/websocket';
+import { webrtcService } from '../services/webrtcService';
+import { callNotificationService } from '../services/callNotificationService';
+import { useCallStore } from '../store/callStore';
+import { useAuthStore } from '../store/authStore';
+import { useToast } from './Toast';
+import { CallActionEvent } from '../types/native';
 
 /**
  * CallManager - Handles WebRTC signaling coordination
  * Listens to WebSocket messages and coordinates with WebRTC service
  */
 export function CallManager() {
-  const {user} = useAuthStore();
+  const { user } = useAuthStore();
   const toast = useToast();
+
+  // Handle call action events from native notification (accept/reject from lock screen)
+  useEffect(() => {
+    const removeCallActionListener = callNotificationService.addCallActionListener(
+      async (event: CallActionEvent) => {
+        console.log('[CallManager] Call action from notification:', event);
+        const callStore = useCallStore.getState();
+
+        if (event.action === 'accept') {
+          // If we have a pending call in ringing state, accept it
+          if (callStore.status === 'ringing') {
+            console.log('[CallManager] Accepting call from notification');
+            callStore.setCallStatus('calling');
+
+            if (callStore.isGroupCall) {
+              const participants = callStore.getAllParticipants();
+              const participantIds = participants.map(p => p.userId);
+              await webrtcService.startGroupCall(participantIds);
+            } else if (callStore.offer) {
+              await webrtcService.answerCall(callStore.callType, callStore.offer);
+            }
+          }
+        } else if (event.action === 'reject') {
+          console.log('[CallManager] Rejecting call from notification');
+          if (callStore.isGroupCall) {
+            webrtcService.endGroupCall();
+          } else {
+            webrtcService.rejectCall();
+          }
+        } else if (event.action === 'missed') {
+          console.log('[CallManager] Call missed (timeout)');
+          if (callStore.status === 'ringing') {
+            callStore.endCall();
+          }
+        }
+      }
+    );
+
+    return () => {
+      removeCallActionListener();
+    };
+  }, []);
 
   useEffect(() => {
     console.log('[CallManager] Setting up WebRTC signaling handlers');
+
+    // Buffer for offers that arrive before incoming_call
+    const pendingOffers = new Map<string, any>();
 
     const removeHandler = websocketService.addMessageHandler(async (message: WebSocketMessage) => {
       try {
@@ -27,19 +75,82 @@ export function CallManager() {
           case 'incoming_call': {
             console.log('[CallManager] Incoming 1-on-1 call received');
             const payload = message.payload || message;
-            const {callId, callType, fromUserId, fromUserName} = payload as any;
+            const { callId, callType, fromUserId, fromUserName, conversationId } = payload as any;
 
             console.log('[CallManager] Incoming call details:', {
               callId,
               callType,
               fromUserId,
               fromUserName,
+              conversationId,
               currentStatus: callStore.status
             });
 
-            // Note: We don't set up the call here, just wait for the webrtc_offer
-            // The webrtc_offer handler will set up the incoming call modal
-            console.log('[CallManager] Waiting for webrtc_offer to complete call setup');
+            // Ignore calls from ourselves
+            if (fromUserId === currentUser?.id) {
+              console.log('[CallManager] Ignoring incoming_call from self');
+              break;
+            }
+
+            // Only handle if not already in a call
+            if (callStore.status === 'idle') {
+              console.log('[CallManager] Setting up incoming call');
+
+              // Check if we already received an offer for this callId
+              const pendingOffer = pendingOffers.get(callId);
+              if (pendingOffer) {
+                console.log('[CallManager] 🎯 Found pending offer that arrived before incoming_call!');
+                pendingOffers.delete(callId); // Remove from buffer
+              }
+
+              // Set up the call with caller information
+              callStore.receiveCall({
+                callId,
+                callType: callType || 'audio',
+                callerUserId: fromUserId,
+                callerName: fromUserName || `User ${fromUserId}`,
+                conversationId,
+                offer: pendingOffer || null,
+              });
+
+              if (pendingOffer) {
+                console.log('[CallManager] ✅ Call ready with buffered offer!');
+
+                // Show notification if app is in background (same logic as webrtc_offer handler)
+                if (AppState.currentState !== 'active') {
+                  console.log('[CallManager] App in background, showing native notification for buffered offer');
+                  callNotificationService.showIncomingCallNotification({
+                    callId,
+                    callerId: String(fromUserId),
+                    callerName: fromUserName || 'Unknown',
+                    callType: callType || 'audio',
+                    isGroupCall: false,
+                  });
+
+                  // Set timeout to auto-reset if notification not answered (35 seconds)
+                  setTimeout(() => {
+                    const currentState = useCallStore.getState();
+                    if (currentState.callId === callId && currentState.status === 'ringing') {
+                      console.log('[CallManager] ⏱️ Notification timed out (buffered offer case), resetting call state');
+                      callStore.reset();
+                    }
+                  }, 35000);
+                }
+              } else {
+                console.log('[CallManager] ✅ Call metadata stored, waiting for offer');
+              }
+            } else {
+              console.log('[CallManager] ⚠️ Already in a call, ignoring incoming_call');
+              // Send busy signal
+              websocketService.send({
+                type: 'reject_call',
+                payload: {
+                  callId,
+                  toUserId: fromUserId,
+                  reason: 'busy'
+                }
+              });
+            }
             break;
           }
 
@@ -48,59 +159,71 @@ export function CallManager() {
 
             // Handle both message structures
             const payload = message.payload || message;
-            const {callId, offer, callerUserId, callerName, callType, conversationId} = payload as any;
 
-            console.log('[CallManager] Offer details:', {
-              callId,
-              callerUserId,
-              callerName,
-              currentUserId: currentUser?.id,
-              currentStatus: callStore.status
-            });
+            const callId = payload.callId;
+            const offer = payload.offer;
+            const callType = payload.callType;
+            const conversationId = payload.conversationId;
 
-            // Ignore offers from ourselves (echoed back from server)
-            if (callerUserId === currentUser?.id) {
-              console.log('[CallManager] Ignoring webrtc_offer from self');
-              break;
-            }
+            console.log('[CallManager] Offer SDP received for callId:', callId);
+            console.log('[CallManager] Current call status:', callStore.status);
+            console.log('[CallManager] Current callId in store:', callStore.callId);
+            console.log('[CallManager] CallId match:', callStore.callId === callId);
+            console.log('[CallManager] Has offer in store before:', !!callStore.offer);
 
             // Validate required fields
-            if (!callId || !offer || !callerUserId) {
-              console.error('[CallManager] ❌ Invalid offer - missing required fields:', {
+            if (!callId || !offer) {
+              console.error('[CallManager] ❌ Invalid offer - missing callId or offer:', {
                 hasCallId: !!callId,
-                hasOffer: !!offer,
-                hasCallerUserId: !!callerUserId
+                hasOffer: !!offer
               });
               break;
             }
 
-            // Only handle if not already in a call
-            if (callStore.status === 'idle') {
-              console.log('[CallManager] Setting up incoming 1-on-1 call');
-              // Update call store with incoming call info and offer
-              callStore.receiveCall({
-                callId,
-                callType: callType || 'audio',
-                callerUserId,
-                callerName,
-                conversationId,
-                offer,
-              });
-              console.log('[CallManager] ✅ Incoming call set to ringing status');
+            // Check if this offer is for an existing ringing call
+            if (callStore.status === 'ringing' && callStore.callId === callId) {
+              console.log('[CallManager] ✅ Adding offer to existing ringing call');
 
-              // The user will accept/reject via IncomingCallModal
-              // The actual answer will be sent when user clicks accept
-            } else {
-              console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring offer');
-              // Send busy signal back to caller
-              websocketService.send({
-                type: 'reject_call',
-                payload: {
+              // Update the call store with the offer
+              callStore.setOffer(offer);
+
+              // Update callType if provided
+              if (callType) {
+                callStore.setCallType(callType);
+              }
+
+              console.log('[CallManager] ✅ Offer added, call ready for user response');
+              console.log('[CallManager] Has offer in store after setOffer:', !!useCallStore.getState().offer);
+
+              // Show native notification if app is in background
+              if (AppState.currentState !== 'active') {
+                console.log('[CallManager] App in background, showing native notification');
+                callNotificationService.showIncomingCallNotification({
                   callId,
-                  toUserId: callerUserId,
-                  reason: 'busy'
-                }
-              });
+                  callerId: String(callStore.callerUserId),
+                  callerName: callStore.callerName || 'Unknown',
+                  callType: callType || 'audio',
+                  isGroupCall: false,
+                });
+
+                // Set timeout to auto-reset if notification not answered (35 seconds)
+                // This fixes the issue where second background calls fail because state wasn't reset
+                setTimeout(() => {
+                  const currentState = useCallStore.getState();
+                  if (currentState.callId === callId && currentState.status === 'ringing') {
+                    console.log('[CallManager] ⏱️ Notification timed out, resetting call state');
+                    callStore.reset();
+                  }
+                }, 35000); // 35 seconds (Android notification timeout is 30s)
+              }
+            } else if (callStore.status === 'idle') {
+              // webrtc_offer arrived before incoming_call
+              // Buffer it and let incoming_call set up the call state to avoid race condition
+              console.warn('[CallManager] ⚠️ Received webrtc_offer before incoming_call - buffering');
+              pendingOffers.set(callId, offer);
+              console.log('[CallManager] Offer buffered for callId:', callId);
+            } else {
+              console.log('[CallManager] ⚠️ Unexpected state - received offer for callId:', callId, 'but current status is:', callStore.status, 'with callId:', callStore.callId);
             }
             break;
           }
@@ -112,7 +235,7 @@ export function CallManager() {
 
             // Handle both message structures
             const payload = message.payload || message;
-            const {answer} = payload as any;
+            const { answer } = payload as any;
             console.log('[CallManager] Extracted answer:', answer);
 
             // Process answer if call is in calling or active state
@@ -172,7 +295,7 @@ export function CallManager() {
           case 'call_failed': {
             console.log('[CallManager] Call failed');
             const payload = message.payload || message;
-            const {reason, message: errorMessage} = payload as any;
+            const { reason, message: errorMessage } = payload as any;
 
             if (reason === 'user_busy') {
               toast.show(errorMessage || 'User is currently on another call', 'warning');
@@ -187,7 +310,7 @@ export function CallManager() {
           case 'initiate_call': {
             // This handles both 1-on-1 and group call invitations
             const payload = message.payload || message;
-            const {callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, groupName, participants} = payload as any;
+            const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, groupName, participants } = payload as any;
 
             console.log('[CallManager] Initiate call received:', {
               callId,
@@ -195,7 +318,9 @@ export function CallManager() {
               isGroupCall,
               groupName,
               participantsCount: participants?.length,
-              fromUserId
+              fromUserId,
+              fromUserName,
+              conversationId
             });
 
             // Ignore initiate_call messages from ourselves (echoed back from server)
@@ -219,6 +344,36 @@ export function CallManager() {
                   userName: p.userName || p.callsign || `User ${p.userId || p}`
                 }))
               });
+            } else {
+              // It's a 1-on-1 call
+              console.log('[CallManager] Received 1-on-1 call initiation');
+
+              // Only handle if not already in a call
+              if (callStore.status === 'idle') {
+                console.log('[CallManager] Setting up incoming 1-on-1 call, waiting for webrtc_offer with SDP');
+                // Set up the call with caller information
+                // The offer will be added when webrtc_offer message arrives
+                callStore.receiveCall({
+                  callId,
+                  callType: callType || 'audio',
+                  callerUserId: fromUserId,
+                  callerName: fromUserName || `User ${fromUserId}`,
+                  conversationId,
+                  offer: null, // Will be set when webrtc_offer arrives
+                });
+                console.log('[CallManager] ✅ Call metadata from initiate_call stored, waiting for offer');
+              } else {
+                console.log('[CallManager] ⚠️ Already in a call, ignoring initiate_call');
+                // Send busy signal
+                websocketService.send({
+                  type: 'reject_call',
+                  payload: {
+                    callId,
+                    toUserId: fromUserId,
+                    reason: 'busy'
+                  }
+                });
+              }
             }
             break;
           }
@@ -226,7 +381,7 @@ export function CallManager() {
           case 'incoming_group_call': {
             console.log('[CallManager] Incoming group call received');
             const payload = message.payload || message;
-            const {callId, groupId, groupName, callType, fromUserId, fromUserName} = payload as any;
+            const { callId, groupId, groupName, callType, fromUserId, fromUserName } = payload as any;
 
             console.log('[CallManager] Incoming group call details:', {
               callId,
@@ -258,6 +413,18 @@ export function CallManager() {
                 userId: fromUserId,
                 userName: fromUserName || `User ${fromUserId}`
               }]);
+
+              // Show native notification if app is in background
+              if (AppState.currentState !== 'active') {
+                console.log('[CallManager] App in background, showing native notification for group call');
+                callNotificationService.showIncomingCallNotification({
+                  callId,
+                  callerId: String(fromUserId),
+                  callerName: groupName || 'Group Call',
+                  callType: callType || 'audio',
+                  isGroupCall: true,
+                });
+              }
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
               // Send rejection signal for group call
@@ -277,7 +444,7 @@ export function CallManager() {
           case 'join_group_call': {
             console.log('[CallManager] Join group call message received');
             const payload = message.payload || message;
-            const {callId, participants, groupName} = payload as any;
+            const { callId, participants, groupName } = payload as any;
 
             // Add participants to call store if not already added
             if (participants && Array.isArray(participants)) {
@@ -296,7 +463,7 @@ export function CallManager() {
           case 'group_call_participants_update': {
             console.log('[CallManager] Group call participants update received');
             const payload = message.payload || message;
-            const {callId, participants, newParticipant} = payload as any;
+            const { callId, participants, newParticipant } = payload as any;
 
             console.log('[CallManager] Participants update:', {
               callId,
@@ -327,7 +494,7 @@ export function CallManager() {
           case 'group_webrtc_offer': {
             console.log('[CallManager] Group WebRTC offer received');
             const payload = message.payload || message;
-            const {fromUserId, offer} = payload as any;
+            const { fromUserId, offer } = payload as any;
 
             console.log('[CallManager] Processing group offer from:', fromUserId);
             await webrtcService.handleGroupOffer(fromUserId, offer);
@@ -337,7 +504,7 @@ export function CallManager() {
           case 'group_webrtc_answer': {
             console.log('[CallManager] Group WebRTC answer received');
             const payload = message.payload || message;
-            const {fromUserId, answer} = payload as any;
+            const { fromUserId, answer } = payload as any;
 
             console.log('[CallManager] Processing group answer from:', fromUserId);
             await webrtcService.handleGroupAnswer(fromUserId, answer);
@@ -347,7 +514,7 @@ export function CallManager() {
           case 'group_webrtc_ice_candidate': {
             console.log('[CallManager] Group WebRTC ICE candidate received');
             const payload = message.payload || message;
-            const {fromUserId, candidate} = payload as any;
+            const { fromUserId, candidate } = payload as any;
 
             console.log('[CallManager] Processing group ICE candidate from:', fromUserId);
             await webrtcService.handleGroupIceCandidate(fromUserId, candidate);
@@ -357,7 +524,7 @@ export function CallManager() {
           case 'initiate_group_webrtc': {
             console.log('[CallManager] 🚀 Initiate group WebRTC received');
             const payload = message.payload || message;
-            const {participants, callId} = payload as any;
+            const { participants, callId } = payload as any;
 
             console.log('[CallManager] Initiate WebRTC details:', {
               callId,
@@ -368,8 +535,26 @@ export function CallManager() {
             });
 
             // Create offers to all other participants (excluding ourselves)
+            // BUT FIRST: Wait for local stream to be ready (getUserMedia might still be in progress)
             if (participants && Array.isArray(participants)) {
               console.log('[CallManager] Processing', participants.length, 'participants');
+              console.log('[CallManager] Waiting for local stream to be ready...');
+
+              // Wait for local stream (max 5 seconds)
+              let localStream = callStore.localStream;
+              let attempts = 0;
+              while (!localStream && attempts < 50) {
+                await new Promise(resolve => setTimeout(resolve, 100)); // Wait 100ms
+                localStream = useCallStore.getState().localStream;
+                attempts++;
+              }
+
+              if (!localStream) {
+                console.error('[CallManager] ❌ Local stream not available after 5 seconds, cannot create offers');
+                break;
+              }
+
+              console.log('[CallManager] ✅ Local stream ready, creating offers for', participants.length, 'participants');
 
               // Get unique participant IDs (remove duplicates)
               const uniqueParticipants = [...new Set(participants.map((p: any) => p.userId || p))];
@@ -394,7 +579,7 @@ export function CallManager() {
           case 'participant_joined': {
             console.log('[CallManager] New participant joined group call');
             const payload = message.payload || message;
-            const {userId, userName} = payload as any;
+            const { userId, userName } = payload as any;
 
             // Add participant to store
             callStore.addParticipant(userId, userName || `User ${userId}`);
@@ -408,7 +593,7 @@ export function CallManager() {
           case 'leave_group_call': {
             console.log('[CallManager] Participant left group call');
             const payload = message.payload || message;
-            const {userId} = payload as any;
+            const { userId } = payload as any;
 
             // Remove participant
             webrtcService.removeGroupParticipant(userId);
