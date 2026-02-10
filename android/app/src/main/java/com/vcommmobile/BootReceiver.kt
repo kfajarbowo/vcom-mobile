@@ -22,12 +22,12 @@ class BootReceiver : BroadcastReceiver() {
             val clientToken = prefs.getString(KEY_CLIENT_TOKEN, null)
 
             if (serviceEnabled && gotifyUrl != null && clientToken != null) {
-                Log.d(TAG, "Starting Gotify service after boot")
+                Log.d(TAG, "Starting Background service after boot")
 
-                val serviceIntent = Intent(context, GotifyForegroundService::class.java).apply {
+                val serviceIntent = Intent(context, BackgroundWebSocketService::class.java).apply {
                     action = "START"
-                    putExtra("gotifyUrl", gotifyUrl)
-                    putExtra("clientToken", clientToken)
+                    putExtra("url", gotifyUrl)
+                    putExtra("tokenOrUserId", clientToken)
                 }
 
                 try {
@@ -37,10 +37,10 @@ class BootReceiver : BroadcastReceiver() {
                         context.startService(serviceIntent)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error starting Gotify service: ${e.message}")
+                    Log.e(TAG, "Error starting Background service: ${e.message}")
                 }
             } else {
-                Log.d(TAG, "Gotify service not configured, skipping")
+                Log.d(TAG, "Background service not configured, skipping")
             }
         }
     }

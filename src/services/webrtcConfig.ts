@@ -5,6 +5,11 @@ import { CallType } from '../store/callStore';
  * Shared configuration for all WebRTC connections
  */
 
+// Configurable TURN server (#5) - change this for deployment
+const TURN_SERVER = '192.168.1.72:3478';
+const TURN_USERNAME = 'test';
+const TURN_CREDENTIAL = 'test123';
+
 // ICE server configuration
 export const ICE_SERVERS = {
   iceServers: [
@@ -18,22 +23,21 @@ export const ICE_SERVERS = {
     {
       urls: 'stun:stun2.l.google.com:19302',
     },
-    // Local TURN server (coturn) - use local network IP for real devices
+    // TURN server (configurable)
     {
-      urls: 'turn:192.168.1.72:3478',
-      username: 'test',
-      credential: 'test123',
-    },
-    // Also try UDP and TCP
-    {
-      urls: 'turn:192.168.1.72:3478?transport=udp',
-      username: 'test',
-      credential: 'test123',
+      urls: `turn:${TURN_SERVER}`,
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
     },
     {
-      urls: 'turn:192.168.1.72:3478?transport=tcp',
-      username: 'test',
-      credential: 'test123',
+      urls: `turn:${TURN_SERVER}?transport=udp`,
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
+    },
+    {
+      urls: `turn:${TURN_SERVER}?transport=tcp`,
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
     },
   ],
   iceTransportPolicy: 'all' as const,

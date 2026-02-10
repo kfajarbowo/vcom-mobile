@@ -7,11 +7,11 @@ import {
   MediaStreamTrack,
 } from 'react-native-webrtc';
 import InCallManager from 'react-native-incall-manager';
-import {websocketService} from './websocket';
-import {useCallStore, CallType} from '../store/callStore';
-import {useAuthStore} from '../store/authStore';
-import {requestCameraAndMicrophonePermissions, requestMicrophonePermission} from '../utils/permissions';
-import {ICE_SERVERS, getMediaConstraints, getInCallManagerOptions} from './webrtcConfig';
+import { websocketService } from './websocket';
+import { useCallStore, CallType } from '../store/callStore';
+import { useAuthStore } from '../store/authStore';
+import { requestCameraAndMicrophonePermissions, requestMicrophonePermission } from '../utils/permissions';
+import { ICE_SERVERS, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
 
 /**
  * OneOnOneCallService
@@ -74,6 +74,7 @@ export class OneOnOneCallService {
             type: 'webrtc_ice_candidate',
             payload: {
               callId: callState.callId,
+              targetUserId: callState.isIncoming ? callState.callerUserId : callState.receiverUserId,
               candidate: {
                 candidate: event.candidate.candidate,
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
@@ -91,6 +92,28 @@ export class OneOnOneCallService {
       console.log('[WebRTC 1:1] Track enabled:', event.track.enabled);
       console.log('[WebRTC 1:1] Track muted:', event.track.muted);
       console.log('[WebRTC 1:1] Track readyState:', event.track.readyState);
+
+      // Handle track mute/unmute events for video
+      if (event.track.kind === 'video') {
+        // Set initial state
+        useCallStore.getState().setRemoteVideoEnabled(event.track.enabled && !event.track.muted);
+
+        event.track.onmute = () => {
+          console.log('[WebRTC 1:1] Remote video track muted');
+          useCallStore.getState().setRemoteVideoEnabled(false);
+        };
+
+        event.track.onunmute = () => {
+          console.log('[WebRTC 1:1] Remote video track unmuted');
+          useCallStore.getState().setRemoteVideoEnabled(true);
+        };
+
+        // Also listen for ended event
+        event.track.onended = () => {
+          console.log('[WebRTC 1:1] Remote video track ended');
+          useCallStore.getState().setRemoteVideoEnabled(false);
+        };
+      }
 
       if (event.streams && event.streams[0]) {
         const remoteStream = event.streams[0];
@@ -198,11 +221,12 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session with speaker enabled
+      // Start audio session - video calls use speaker, audio calls use earpiece
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(true);
-      console.log('[WebRTC 1:1] Audio session started with speaker enabled');
+      const useSpeaker = callType === 'video';
+      InCallManager.setForceSpeakerphoneOn(useSpeaker);
+      console.log(`[WebRTC 1:1] Audio session started, speaker: ${useSpeaker}`);
 
       // Initialize peer connection
       await this.initializePeerConnection();
@@ -236,7 +260,7 @@ export class OneOnOneCallService {
 
       // Send offer via WebSocket
       const callState = useCallStore.getState();
-      const {user} = useAuthStore.getState();
+      const { user } = useAuthStore.getState();
 
       // First, send initiate_call to notify recipient
       websocketService.send({
@@ -303,14 +327,24 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session with speaker enabled
+      // Save ICE candidates received while ringing (before peer connection was created).
+      // initializePeerConnection() clears pendingIceCandidates, so we must preserve them.
+      const savedIceCandidates = [...this.pendingIceCandidates];
+      console.log('[WebRTC 1:1] Saved', savedIceCandidates.length, 'ICE candidates received while ringing');
+
+      // Start audio session - video calls use speaker, audio calls use earpiece
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(true);
-      console.log('[WebRTC 1:1] Audio session started with speaker enabled');
+      const useSpeaker = callType === 'video';
+      InCallManager.setForceSpeakerphoneOn(useSpeaker);
+      console.log(`[WebRTC 1:1] Audio session started, speaker: ${useSpeaker}`);
 
-      // Initialize peer connection
+      // Initialize peer connection (this clears pendingIceCandidates)
       await this.initializePeerConnection();
+
+      // Restore saved ICE candidates so they can be added after remote description is set
+      this.pendingIceCandidates = savedIceCandidates;
+      console.log('[WebRTC 1:1] Restored', savedIceCandidates.length, 'saved ICE candidates');
 
       // Get user media
       const stream = await this.getUserMedia(callType);
@@ -340,7 +374,7 @@ export class OneOnOneCallService {
 
       // Get call state
       const callState = useCallStore.getState();
-      const {user} = useAuthStore.getState();
+      const { user } = useAuthStore.getState();
 
       // Send accept_call message to server to notify the caller
       websocketService.send({

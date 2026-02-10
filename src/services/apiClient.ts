@@ -5,10 +5,10 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFetchBlob from 'rn-fetch-blob';
-import {Platform, Linking, Share, NativeModules} from 'react-native';
+import { Platform, Linking, Share, NativeModules } from 'react-native';
 import FileViewer from 'react-native-file-viewer';
 
-const {FileOpener} = NativeModules;
+const { FileOpener } = NativeModules;
 
 // Storage keys
 export const STORAGE_KEYS = {
@@ -68,11 +68,26 @@ export const apiFetch = async (
     console.log(`[API] Added X-Session-Token header`);
   }
 
-  return fetch(url, {
-    ...options,
-    headers,
-    credentials: 'include', // Important for session cookies
-  });
+  // Add timeout handling
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+  try {
+    console.log('[API] Sending network request...');
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include', // Important for session cookies
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    console.log(`[API] Response received: ${response.status}`);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    console.error(`[API] Fetch error for ${url}:`, error);
+    throw error;
+  }
 };
 
 /**
@@ -167,7 +182,7 @@ export const downloadAndOpenPDF = async (
     };
 
     // Configure download - use cache directory for better Android compatibility
-    const {config, fs, android, ios} = RNFetchBlob;
+    const { config, fs, android, ios } = RNFetchBlob;
 
     // For Android, use cache directory to avoid scoped storage issues
     // For iOS, use documents directory
@@ -291,7 +306,7 @@ export const downloadAndOpenDocument = async (
     };
 
     // Configure download - use cache directory for better Android compatibility
-    const {config, fs, android, ios} = RNFetchBlob;
+    const { config, fs, android, ios } = RNFetchBlob;
 
     // For Android, use cache directory to avoid scoped storage issues
     // For iOS, use documents directory

@@ -46,7 +46,7 @@ class IncomingCallActivity : AppCompatActivity() {
     private var hasCallId: Boolean = false
     private var hasCallerUserId: Boolean = false
     private var hasOffer: Boolean = false
-    
+    private var payload: String? = null
 
     private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
@@ -99,13 +99,14 @@ class IncomingCallActivity : AppCompatActivity() {
             callerName = it.getStringExtra("callerName") ?: "Unknown"
             callType = it.getStringExtra("callType") ?: "audio"
             isGroupCall = it.getBooleanExtra("isGroupCall", false)
-            
+            payload = it.getStringExtra("payload")
+
             // Check if this was launched from notification accept button
             val autoAccept = it.getBooleanExtra("autoAccept", false)
             if (autoAccept) {
                 // Accept the call immediately
                 handleAccept()
-                
+
                 // Bring the app to foreground using ActivityManager
                 try {
                     val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -118,7 +119,7 @@ class IncomingCallActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to bring app to foreground: ${e.message}")
                 }
-                
+
                 // Finish this activity
                 finish()
                 return
@@ -383,18 +384,8 @@ class IncomingCallActivity : AppCompatActivity() {
         cancelTimeout()
         cancelNotification()
 
-        // Emit event to React Native
-        val params = Arguments.createMap().apply {
-            putString("callId", callId)
-            putString("callerId", callerId)
-            putString("callerName", callerName)
-            putString("callType", callType)
-            putBoolean("isGroupCall", isGroupCall)
-            putString("action", "accept")
-        }
-        CallNotificationModule.emitEvent("onCallAction", params)
-
-        // Launch main app
+        // Launch main app with call data - MainActivity will emit the event
+        // This avoids duplicate event emission
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("callId", callId)
@@ -403,6 +394,9 @@ class IncomingCallActivity : AppCompatActivity() {
             putExtra("callType", callType)
             putExtra("isGroupCall", isGroupCall)
             putExtra("callAction", "accept")
+            if (payload != null) {
+                putExtra("payload", payload)
+            }
         }
         launchIntent?.let { startActivity(it) }
 
@@ -415,7 +409,8 @@ class IncomingCallActivity : AppCompatActivity() {
         cancelTimeout()
         cancelNotification()
 
-        // Emit event to React Native
+        // For reject, we need to emit event directly since we're not launching the app
+        // But we should also notify the server via HeadlessJS
         val params = Arguments.createMap().apply {
             putString("callId", callId)
             putString("callerId", callerId)
@@ -434,7 +429,7 @@ class IncomingCallActivity : AppCompatActivity() {
         stopRingtoneAndVibration()
         cancelNotification()
 
-        // Emit event to React Native
+        // For missed call, emit event directly
         val params = Arguments.createMap().apply {
             putString("callId", callId)
             putString("callerId", callerId)

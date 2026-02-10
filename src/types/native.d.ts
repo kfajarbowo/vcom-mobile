@@ -14,6 +14,7 @@ export interface IncomingCallData {
 
 export interface CallActionEvent extends IncomingCallData {
   action: 'accept' | 'reject' | 'missed';
+  payload?: string;
 }
 
 export interface CallNotificationModuleInterface {
@@ -34,14 +35,14 @@ export interface CallNotificationModuleInterface {
   cancelCallNotification(): Promise<boolean>;
 
   /**
-   * Start the Gotify foreground service (Android only, no-op on iOS)
+   * Start the background service (Android only, no-op on iOS)
    */
-  startGotifyService(gotifyUrl: string, clientToken: string): Promise<boolean>;
+  startBackgroundService(url: string, tokenOrUserId: string): Promise<boolean>;
 
   /**
-   * Stop the Gotify foreground service (Android only, no-op on iOS)
+   * Stop the background service (Android only, no-op on iOS)
    */
-  stopGotifyService(): Promise<boolean>;
+  stopBackgroundService(): Promise<boolean>;
 
   /**
    * Request notification permission (Android 13+)

@@ -1,9 +1,9 @@
-import React, {useEffect, useState} from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Modal} from 'react-native';
-import {RTCView} from 'react-native-webrtc';
+import React, { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Modal } from 'react-native';
+import { RTCView } from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useCallStore} from '../store/callStore';
-import {webrtcService} from '../services/webrtcService';
+import { useCallStore } from '../store/callStore';
+import { webrtcService } from '../services/webrtcService';
 
 export function ActiveCallScreen() {
   const {
@@ -17,6 +17,7 @@ export function ActiveCallScreen() {
     isMuted,
     isVideoEnabled,
     isSpeakerEnabled,
+    isRemoteVideoEnabled,
     isGroupCall,
     toggleMute,
     toggleVideo,
@@ -25,7 +26,7 @@ export function ActiveCallScreen() {
 
   const [callDuration, setCallDuration] = useState(0);
 
-  const isVisible = status === 'calling' || status === 'active';
+  const isVisible = (status === 'calling' || status === 'active') && !isGroupCall;
   const displayName = isIncoming ? callerName : receiverName;
 
   // Debug: Log stream status
@@ -79,7 +80,7 @@ export function ActiveCallScreen() {
       <View style={styles.container}>
         {/* Remote Video/Avatar */}
         <View style={styles.remoteVideoContainer}>
-          {callType === 'video' && remoteStream ? (
+          {callType === 'video' && remoteStream && isRemoteVideoEnabled ? (
             <RTCView
               streamURL={remoteStream.toURL()}
               style={styles.remoteVideo}
@@ -187,7 +188,7 @@ export function ActiveCallScreen() {
               size={28}
               color="#fff"
             />
-            <Text style={[styles.controlLabel, {color: '#fff'}]}>END</Text>
+            <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -234,7 +235,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
     marginBottom: 8,
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
-    textShadowOffset: {width: 0, height: 2},
+    textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 4,
   },
   statusContainer: {

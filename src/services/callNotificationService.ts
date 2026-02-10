@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { IncomingCallData, CallActionEvent } from '../types/native';
-import { gotifyClientService } from './gotifyClientService';
+import { backgroundWebSocketClient } from './backgroundWebSocketClient';
 
 // Get the appropriate native module based on platform
 const CallNotificationNative = Platform.select({
@@ -21,9 +21,9 @@ const CallNotificationNative = Platform.select({
 });
 
 // Storage keys
-const GOTIFY_URL_KEY = '@gotify_url';
-const GOTIFY_TOKEN_KEY = '@gotify_client_token';
-const SERVICE_ENABLED_KEY = '@gotify_service_enabled';
+const SERVICE_URL_KEY = '@background_service_url';
+const SERVICE_TOKEN_KEY = '@background_service_token';
+const SERVICE_ENABLED_KEY = '@background_service_enabled';
 
 // Event types
 type CallActionCallback = (event: CallActionEvent) => void;
@@ -38,7 +38,7 @@ class CallNotificationService {
   private incomingCallCallbacks: Set<IncomingCallCallback> = new Set();
   private isInitialized = false;
 
-  private constructor() {}
+  private constructor() { }
 
   static getInstance(): CallNotificationService {
     if (!CallNotificationService.instance) {
@@ -73,8 +73,10 @@ class CallNotificationService {
       // Request notification permission on Android 13+
       await this.requestPermission();
 
-      // Start Gotify service if configured
-      await this.startGotifyServiceIfConfigured();
+      // NOTE: Don't auto-start background service here
+      // It creates a second WebSocket connection that interferes with the JS WebSocket
+      // The background service should only run when the app is in background/killed
+      // await this.startBackgroundServiceIfConfigured();
 
       this.isInitialized = true;
       console.log('[CallNotificationService] Initialized successfully');
@@ -98,7 +100,7 @@ class CallNotificationService {
       }
     );
 
-    // Listen for incoming call events (from Gotify service)
+    // Listen for incoming call events (from Background service)
     this.incomingCallSubscription = this.eventEmitter.addListener(
       'onIncomingCall',
       (data: IncomingCallData) => {
@@ -179,7 +181,11 @@ class CallNotificationService {
    */
   async cancelCallNotification(): Promise<boolean> {
     try {
-      if (!CallNotificationNative) return false;
+      if (!CallNotificationNative?.cancelCallNotification) {
+        // Method not implemented in native module
+        console.log('[CallNotificationService] cancelCallNotification not available');
+        return true;
+      }
       return await CallNotificationNative.cancelCallNotification();
     } catch (error) {
       console.error('[CallNotificationService] Cancel notification error:', error);
@@ -214,92 +220,77 @@ class CallNotificationService {
   }
 
   /**
-   * Configure and start Gotify service
+   * Configure and start Background service
    */
-  async configureGotifyService(gotifyUrl: string, clientToken: string): Promise<boolean> {
+  async configureBackgroundService(url: string, tokenOrUserId: string): Promise<boolean> {
     try {
       // Save configuration
-      await AsyncStorage.setItem(GOTIFY_URL_KEY, gotifyUrl);
-      await AsyncStorage.setItem(GOTIFY_TOKEN_KEY, clientToken);
+      await AsyncStorage.setItem(SERVICE_URL_KEY, url);
+      await AsyncStorage.setItem(SERVICE_TOKEN_KEY, tokenOrUserId);
       await AsyncStorage.setItem(SERVICE_ENABLED_KEY, 'true');
 
       // Start the service
-      return await this.startGotifyService(gotifyUrl, clientToken);
+      return await this.startBackgroundService(url, tokenOrUserId);
     } catch (error) {
-      console.error('[CallNotificationService] Configure Gotify error:', error);
+      console.error('[CallNotificationService] Configure Background service error:', error);
       return false;
     }
   }
 
   /**
-   * Start Gotify service with provided credentials
+   * Start Background service with provided credentials
    */
-  private async startGotifyService(gotifyUrl: string, clientToken: string): Promise<boolean> {
+  private async startBackgroundService(url: string, tokenOrUserId: string): Promise<boolean> {
     try {
       if (Platform.OS === 'android' && CallNotificationNative) {
         // On Android, use native foreground service
-        return await CallNotificationNative.startGotifyService(gotifyUrl, clientToken);
+        return await CallNotificationNative.startBackgroundService(url, tokenOrUserId);
       } else {
-        // On iOS, use JS-based client (only works when app is active)
-        gotifyClientService.connect(gotifyUrl, clientToken, (message) => {
-          // Check if it's a call notification
-          const data = message.extras?.data || message.extras?.['client::notification']?.data;
-          if (data?.type === 'call') {
-            const callData: IncomingCallData = {
-              callId: data.callId || '',
-              callerId: data.callerId || '',
-              callerName: data.callerName || 'Unknown',
-              callType: data.callType || 'audio',
-              isGroupCall: data.isGroupCall || false,
-            };
-            // Show CallKit notification
-            this.showIncomingCallNotification(callData);
-            // Notify callbacks
-            this.incomingCallCallbacks.forEach(callback => callback(callData));
-          }
-        });
+        // iOS background handling would go here (e.g. APNs or VoIP push)
+        // For now, iOS relies on app being active or standard push notifications
+        console.log('[CallNotificationService] Background service not implemented for iOS in this module');
         return true;
       }
     } catch (error) {
-      console.error('[CallNotificationService] Start Gotify service error:', error);
+      console.error('[CallNotificationService] Start Background service error:', error);
       return false;
     }
   }
 
   /**
-   * Start Gotify service if previously configured
+   * Start Background service if previously configured
    */
-  private async startGotifyServiceIfConfigured(): Promise<void> {
+  private async startBackgroundServiceIfConfigured(): Promise<void> {
     try {
       const enabled = await AsyncStorage.getItem(SERVICE_ENABLED_KEY);
       if (enabled !== 'true') return;
 
-      const gotifyUrl = await AsyncStorage.getItem(GOTIFY_URL_KEY);
-      const clientToken = await AsyncStorage.getItem(GOTIFY_TOKEN_KEY);
+      const url = await AsyncStorage.getItem(SERVICE_URL_KEY);
+      const tokenOrUserId = await AsyncStorage.getItem(SERVICE_TOKEN_KEY);
 
-      if (gotifyUrl && clientToken) {
-        await this.startGotifyService(gotifyUrl, clientToken);
+      if (url && tokenOrUserId) {
+        await this.startBackgroundService(url, tokenOrUserId);
       }
     } catch (error) {
-      console.error('[CallNotificationService] Auto-start Gotify error:', error);
+      console.error('[CallNotificationService] Auto-start Background service error:', error);
     }
   }
 
   /**
-   * Stop Gotify service
+   * Stop Background service
    */
-  async stopGotifyService(): Promise<boolean> {
+  async stopBackgroundService(): Promise<boolean> {
     try {
       await AsyncStorage.setItem(SERVICE_ENABLED_KEY, 'false');
 
       if (Platform.OS === 'android' && CallNotificationNative) {
-        return await CallNotificationNative.stopGotifyService();
+        return await CallNotificationNative.stopBackgroundService();
       } else {
-        gotifyClientService.disconnect();
+        backgroundWebSocketClient.disconnect();
         return true;
       }
     } catch (error) {
-      console.error('[CallNotificationService] Stop Gotify service error:', error);
+      console.error('[CallNotificationService] Stop Background service error:', error);
       return false;
     }
   }
@@ -332,7 +323,7 @@ class CallNotificationService {
     this.incomingCallSubscription?.remove();
     this.callActionCallbacks.clear();
     this.incomingCallCallbacks.clear();
-    gotifyClientService.disconnect();
+    backgroundWebSocketClient.disconnect();
     this.isInitialized = false;
   }
 }

@@ -1,17 +1,23 @@
-import React, {useState, useEffect} from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, ActivityIndicator} from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useAuthStore} from '../../store/authStore';
-import {Input} from '../../components/ui';
-import {setApiServer, STORAGE_KEYS, apiClient} from '../../services/apiClient';
-import {callNotificationService} from '../../services/callNotificationService';
+import { useAuthStore } from '../../store/authStore';
+import { Input } from '../../components/ui';
+import { setApiServer, STORAGE_KEYS, apiRequest } from '../../services/apiClient';
 
 export function SettingsScreen() {
-  const {user, logout} = useAuthStore();
+  const { user, logout } = useAuthStore();
   const [serverHost, setServerHost] = useState('192.168.100.7');
   const [serverPort, setServerPort] = useState('5000');
   const [isEditing, setIsEditing] = useState(false);
+
+  // Change password state
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [isPasswordLoading, setIsPasswordLoading] = useState(false);
 
   // Gotify settings state
   const [gotifyUrl, setGotifyUrl] = useState('');
@@ -33,7 +39,7 @@ export function SettingsScreen() {
       if (savedHost) setServerHost(savedHost);
       if (savedPort) setServerPort(savedPort);
 
-      console.log('[Settings] Loaded server settings:', {host: savedHost, port: savedPort});
+      console.log('[Settings] Loaded server settings:', { host: savedHost, port: savedPort });
     } catch (error) {
       console.error('[Settings] Error loading server settings:', error);
     }
@@ -45,11 +51,11 @@ export function SettingsScreen() {
       Alert.alert(
         'Server Settings Updated',
         `Server configured to ${serverHost}:${serverPort}\n\nChanges will take effect on next app restart.`,
-        [{text: 'OK'}]
+        [{ text: 'OK' }]
       );
       setIsEditing(false);
     } catch (error) {
-      Alert.alert('Error', 'Failed to save server settings', [{text: 'OK'}]);
+      Alert.alert('Error', 'Failed to save server settings', [{ text: 'OK' }]);
     }
   };
 
@@ -57,6 +63,45 @@ export function SettingsScreen() {
     // Reload original settings
     await loadServerSettings();
     setIsEditing(false);
+  };
+
+  const handleChangePassword = async () => {
+    if (!currentPassword.trim()) {
+      Alert.alert('Error', 'Please enter your current password.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      Alert.alert('Error', 'New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      Alert.alert('Error', 'New passwords do not match.');
+      return;
+    }
+    setIsPasswordLoading(true);
+    try {
+      await apiRequest('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      Alert.alert('Success', 'Password changed successfully.');
+      setIsChangingPassword(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+    } catch (error: any) {
+      Alert.alert('Error', error?.message || 'Failed to change password.');
+    } finally {
+      setIsPasswordLoading(false);
+    }
+  };
+
+  const handleCancelPasswordChange = () => {
+    setIsChangingPassword(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmNewPassword('');
   };
 
   return (
@@ -69,114 +114,189 @@ export function SettingsScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* User Info */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>OPERATOR INFO</Text>
-        <View style={styles.infoCard}>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>CALLSIGN</Text>
-            <Text style={styles.infoValue}>
-              {user?.callsign?.toUpperCase() || 'N/A'}
-            </Text>
-          </View>
-          <View style={styles.infoDivider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>NAME</Text>
-            <Text style={styles.infoValue}>
-              {user?.fullName?.toUpperCase() || 'N/A'}
-            </Text>
-          </View>
-          <View style={styles.infoDivider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>ROLE</Text>
-            <Text style={styles.infoValue}>
-              {user?.role?.toUpperCase() || 'N/A'}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Server Settings */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>SERVER SETTINGS</Text>
-          {!isEditing && (
-            <TouchableOpacity
-              style={styles.editButton}
-              onPress={() => setIsEditing(true)}
-              activeOpacity={0.7}>
-              <MaterialCommunityIcons name="pencil" size={16} color="#a6c455" />
-              <Text style={styles.editButtonText}>EDIT</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {!isEditing ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>OPERATOR INFO</Text>
           <View style={styles.infoCard}>
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>SERVER HOST</Text>
-              <Text style={styles.infoValue}>{serverHost}</Text>
+              <Text style={styles.infoLabel}>CALLSIGN</Text>
+              <Text style={styles.infoValue}>
+                {user?.callsign?.toUpperCase() || 'N/A'}
+              </Text>
             </View>
             <View style={styles.infoDivider} />
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>SERVER PORT</Text>
-              <Text style={styles.infoValue}>{serverPort}</Text>
+              <Text style={styles.infoLabel}>NAME</Text>
+              <Text style={styles.infoValue}>
+                {user?.fullName?.toUpperCase() || 'N/A'}
+              </Text>
             </View>
             <View style={styles.infoDivider} />
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>BASE URL</Text>
-              <Text style={styles.infoValue}>http://{serverHost}:{serverPort}</Text>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.editCard}>
-            <Text style={styles.editInfo}>
-              Configure the local WiFi server address for API communication
-            </Text>
-
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>SERVER HOST / IP ADDRESS</Text>
-              <Input
-                placeholder="192.168.x.x"
-                value={serverHost}
-                onChangeText={setServerHost}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="decimal-pad"
-              />
+              <Text style={styles.infoLabel}>ROLE</Text>
+              <Text style={styles.infoValue}>
+                {user?.role?.toUpperCase() || 'N/A'}
+              </Text>
             </View>
 
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>SERVER PORT</Text>
-              <Input
-                placeholder="5000"
-                value={serverPort}
-                onChangeText={setServerPort}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="number-pad"
-              />
-            </View>
+            <View style={styles.infoDivider} />
 
-            <View style={styles.buttonRow}>
+            {!isChangingPassword ? (
               <TouchableOpacity
-                style={styles.saveButton}
-                onPress={handleServerSettingsSave}
-                activeOpacity={0.8}>
-                <MaterialCommunityIcons name="content-save" size={18} color="#ffffff" />
-                <Text style={styles.saveButtonText}>SAVE</Text>
+                style={styles.changePasswordButton}
+                onPress={() => setIsChangingPassword(true)}
+                activeOpacity={0.7}>
+                <MaterialCommunityIcons name="lock-reset" size={18} color="#a6c455" />
+                <Text style={styles.changePasswordButtonText}>CHANGE PASSWORD</Text>
               </TouchableOpacity>
+            ) : (
+              <View style={styles.changePasswordForm}>
+                <Text style={styles.changePasswordTitle}>CHANGE PASSWORD</Text>
 
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={handleCancelEdit}
-                activeOpacity={0.8}>
-                <MaterialCommunityIcons name="close" size={18} color="#999" />
-                <Text style={styles.cancelButtonText}>CANCEL</Text>
-              </TouchableOpacity>
-            </View>
+                <View style={styles.inputContainer}>
+                  <Text style={styles.inputLabel}>CURRENT PASSWORD</Text>
+                  <Input
+                    placeholder="Enter current password"
+                    value={currentPassword}
+                    onChangeText={setCurrentPassword}
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Text style={styles.inputLabel}>NEW PASSWORD</Text>
+                  <Input
+                    placeholder="Enter new password"
+                    value={newPassword}
+                    onChangeText={setNewPassword}
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Text style={styles.inputLabel}>CONFIRM NEW PASSWORD</Text>
+                  <Input
+                    placeholder="Confirm new password"
+                    value={confirmNewPassword}
+                    onChangeText={setConfirmNewPassword}
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                </View>
+
+                <View style={styles.buttonRow}>
+                  <TouchableOpacity
+                    style={[styles.saveButton, isPasswordLoading && { opacity: 0.6 }]}
+                    onPress={handleChangePassword}
+                    disabled={isPasswordLoading}
+                    activeOpacity={0.8}>
+                    {isPasswordLoading ? (
+                      <ActivityIndicator color="#ffffff" size="small" />
+                    ) : (
+                      <>
+                        <MaterialCommunityIcons name="check" size={18} color="#ffffff" />
+                        <Text style={styles.saveButtonText}>CONFIRM</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.cancelButton}
+                    onPress={handleCancelPasswordChange}
+                    disabled={isPasswordLoading}
+                    activeOpacity={0.8}>
+                    <MaterialCommunityIcons name="close" size={18} color="#999" />
+                    <Text style={styles.cancelButtonText}>CANCEL</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
-        )}
-      </View>
+        </View>
+
+        {/* Server Settings */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>SERVER SETTINGS</Text>
+            {!isEditing && (
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => setIsEditing(true)}
+                activeOpacity={0.7}>
+                <MaterialCommunityIcons name="pencil" size={16} color="#a6c455" />
+                <Text style={styles.editButtonText}>EDIT</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {!isEditing ? (
+            <View style={styles.infoCard}>
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>SERVER HOST</Text>
+                <Text style={styles.infoValue}>{serverHost}</Text>
+              </View>
+              <View style={styles.infoDivider} />
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>SERVER PORT</Text>
+                <Text style={styles.infoValue}>{serverPort}</Text>
+              </View>
+              <View style={styles.infoDivider} />
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>BASE URL</Text>
+                <Text style={styles.infoValue}>http://{serverHost}:{serverPort}</Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.editCard}>
+              <Text style={styles.editInfo}>
+                Configure the local WiFi server address for API communication
+              </Text>
+
+              <View style={styles.inputContainer}>
+                <Text style={styles.inputLabel}>SERVER HOST / IP ADDRESS</Text>
+                <Input
+                  placeholder="192.168.x.x"
+                  value={serverHost}
+                  onChangeText={setServerHost}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="decimal-pad"
+                />
+              </View>
+
+              <View style={styles.inputContainer}>
+                <Text style={styles.inputLabel}>SERVER PORT</Text>
+                <Input
+                  placeholder="5000"
+                  value={serverPort}
+                  onChangeText={setServerPort}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="number-pad"
+                />
+              </View>
+
+              <View style={styles.buttonRow}>
+                <TouchableOpacity
+                  style={styles.saveButton}
+                  onPress={handleServerSettingsSave}
+                  activeOpacity={0.8}>
+                  <MaterialCommunityIcons name="content-save" size={18} color="#ffffff" />
+                  <Text style={styles.saveButtonText}>SAVE</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={handleCancelEdit}
+                  activeOpacity={0.8}>
+                  <MaterialCommunityIcons name="close" size={18} color="#999" />
+                  <Text style={styles.cancelButtonText}>CANCEL</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
 
         {/* Actions */}
         <View style={styles.section}>
@@ -369,5 +489,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     letterSpacing: 1,
+  },
+  changePasswordButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    gap: 8,
+    marginTop: 4,
+  },
+  changePasswordButtonText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  changePasswordForm: {
+    marginTop: 8,
+  },
+  changePasswordTitle: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#a6c455',
+    letterSpacing: 1,
+    marginBottom: 12,
+    textAlign: 'center',
   },
 });

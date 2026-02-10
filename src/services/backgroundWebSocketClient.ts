@@ -1,17 +1,21 @@
 /**
- * Gotify WebSocket client for React Native (iOS)
+ * Background WebSocket client for React Native (iOS/Non-native fallback)
  * Used when app is active to receive real-time notifications
  */
 
-import { GotifyMessage } from '../types/native';
+// Define a generic message type matching our WebSocket protocol
+export interface WebSocketMessage {
+  type: string;
+  payload?: any;
+}
 
-type MessageCallback = (message: GotifyMessage) => void;
+type MessageCallback = (message: WebSocketMessage) => void;
 
-class GotifyClientService {
-  private static instance: GotifyClientService;
+class BackgroundWebSocketClient {
+  private static instance: BackgroundWebSocketClient;
   private websocket: WebSocket | null = null;
-  private gotifyUrl: string = '';
-  private clientToken: string = '';
+  private serviceUrl: string = '';
+  private clientUserId: string = '';
   private onMessage: MessageCallback | null = null;
   private isConnected = false;
   private reconnectAttempts = 0;
@@ -20,21 +24,21 @@ class GotifyClientService {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
 
-  private constructor() {}
+  private constructor() { }
 
-  static getInstance(): GotifyClientService {
-    if (!GotifyClientService.instance) {
-      GotifyClientService.instance = new GotifyClientService();
+  static getInstance(): BackgroundWebSocketClient {
+    if (!BackgroundWebSocketClient.instance) {
+      BackgroundWebSocketClient.instance = new BackgroundWebSocketClient();
     }
-    return GotifyClientService.instance;
+    return BackgroundWebSocketClient.instance;
   }
 
   /**
-   * Connect to Gotify WebSocket stream
+   * Connect to WebSocket stream
    */
-  connect(gotifyUrl: string, clientToken: string, onMessage: MessageCallback): void {
-    this.gotifyUrl = gotifyUrl;
-    this.clientToken = clientToken;
+  connect(url: string, userId: string, onMessage: MessageCallback): void {
+    this.serviceUrl = url;
+    this.clientUserId = userId;
     this.onMessage = onMessage;
 
     this.establishConnection();
@@ -49,46 +53,57 @@ class GotifyClientService {
       this.websocket = null;
     }
 
-    // Convert HTTP URL to WebSocket URL
-    const wsUrl = this.gotifyUrl
-      .replace('https://', 'wss://')
-      .replace('http://', 'ws://')
-      .replace(/\/$/, '') + `/stream?token=${this.clientToken}`;
-
-    console.log('[GotifyClientService] Connecting to:', wsUrl);
+    const wsUrl = this.serviceUrl;
+    console.log('[BackgroundWebSocketClient] Connecting to:', wsUrl);
 
     try {
       this.websocket = new WebSocket(wsUrl);
 
       this.websocket.onopen = () => {
-        console.log('[GotifyClientService] WebSocket connected');
+        console.log('[BackgroundWebSocketClient] WebSocket connected');
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.startPingInterval();
+
+        // Send auth
+        const userIdInt = parseInt(this.clientUserId, 10);
+        if (!isNaN(userIdInt)) {
+          const authMsg = {
+            type: 'auth',
+            payload: { userId: userIdInt }
+          };
+          this.websocket?.send(JSON.stringify(authMsg));
+          console.log('[BackgroundWebSocketClient] Auth sent for userId:', userIdInt);
+        }
       };
 
       this.websocket.onmessage = (event) => {
         try {
-          const message: GotifyMessage = JSON.parse(event.data);
-          console.log('[GotifyClientService] Message received:', message.title);
+          // React Native WebSocket event.data is string
+          const dataString = typeof event.data === 'string' ? event.data : '';
+          if (!dataString) return;
+
+          const message: WebSocketMessage = JSON.parse(dataString);
+          if (!message) return;
+          console.log('[BackgroundWebSocketClient] Message received:', message.type);
           this.onMessage?.(message);
         } catch (error) {
-          console.error('[GotifyClientService] Parse error:', error);
+          console.error('[BackgroundWebSocketClient] Parse error:', error);
         }
       };
 
       this.websocket.onerror = (error) => {
-        console.error('[GotifyClientService] WebSocket error:', error);
+        console.error('[BackgroundWebSocketClient] WebSocket error:', error);
       };
 
       this.websocket.onclose = (event) => {
-        console.log('[GotifyClientService] WebSocket closed:', event.code, event.reason);
+        console.log('[BackgroundWebSocketClient] WebSocket closed:', event.code, event.reason);
         this.isConnected = false;
         this.stopPingInterval();
         this.scheduleReconnect();
       };
     } catch (error) {
-      console.error('[GotifyClientService] Connection error:', error);
+      console.error('[BackgroundWebSocketClient] Connection error:', error);
       this.scheduleReconnect();
     }
   }
@@ -100,12 +115,12 @@ class GotifyClientService {
     this.stopPingInterval();
     this.pingInterval = setInterval(() => {
       if (this.websocket?.readyState === WebSocket.OPEN) {
-        // Send a ping frame (empty message)
         try {
-          // WebSocket API doesn't directly support ping, so we rely on the server
-          // Most WebSocket servers handle this automatically
+          const pingMsg = JSON.stringify({ type: 'ping' });
+          this.websocket.send(pingMsg);
+          console.log('[BackgroundWebSocketClient] Ping sent');
         } catch (error) {
-          console.error('[GotifyClientService] Ping error:', error);
+          console.error('[BackgroundWebSocketClient] Ping error:', error);
         }
       }
     }, 30000);
@@ -130,26 +145,26 @@ class GotifyClientService {
     }
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('[GotifyClientService] Max reconnect attempts reached');
+      console.log('[BackgroundWebSocketClient] Max reconnect attempts reached');
       return;
     }
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * this.reconnectAttempts;
-    console.log(`[GotifyClientService] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    console.log(`[BackgroundWebSocketClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
     this.reconnectTimer = setTimeout(() => {
-      if (this.gotifyUrl && this.clientToken) {
+      if (this.serviceUrl && this.clientUserId) {
         this.establishConnection();
       }
     }, delay);
   }
 
   /**
-   * Disconnect from Gotify
+   * Disconnect
    */
   disconnect(): void {
-    console.log('[GotifyClientService] Disconnecting');
+    console.log('[BackgroundWebSocketClient] Disconnecting');
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -166,8 +181,8 @@ class GotifyClientService {
     this.isConnected = false;
     this.reconnectAttempts = 0;
     this.onMessage = null;
-    this.gotifyUrl = '';
-    this.clientToken = '';
+    this.serviceUrl = '';
+    this.clientUserId = '';
   }
 
   /**
@@ -179,4 +194,4 @@ class GotifyClientService {
 }
 
 // Export singleton instance
-export const gotifyClientService = GotifyClientService.getInstance();
+export const backgroundWebSocketClient = BackgroundWebSocketClient.getInstance();

@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,11 @@ import {
   StatusBar,
   Dimensions,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import {WebView} from 'react-native-webview';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import RNFetchBlob from 'rn-fetch-blob';
 import {getSessionToken} from '../services/apiClient';
 
 interface VideoPlayerModalProps {
@@ -29,43 +31,101 @@ export function VideoPlayerModal({
   onClose,
 }: VideoPlayerModalProps) {
   const [loading, setLoading] = useState(true);
-  const [sessionToken, setSessionToken] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [localFilePath, setLocalFilePath] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const tempFileRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (visible) {
-      setLoading(true);
-      // Load session token when modal opens
-      getSessionToken()
-        .then(token => {
-          console.log('[VideoPlayerModal] Session token loaded:', !!token);
-          setSessionToken(token || '');
-        })
-        .catch(err => {
-          console.error('[VideoPlayerModal] Failed to get session token:', err);
-          setError('Failed to load session');
-        });
+    if (visible && videoUrl) {
+      downloadVideo();
     }
-  }, [visible]);
+
+    return () => {
+      // Clean up temp file on unmount or when modal closes
+      cleanupTempFile();
+    };
+  }, [visible, videoUrl]);
+
+  const cleanupTempFile = () => {
+    if (tempFileRef.current) {
+      RNFetchBlob.fs
+        .unlink(tempFileRef.current)
+        .catch(() => {}); // Ignore cleanup errors
+      tempFileRef.current = null;
+    }
+  };
+
+  const downloadVideo = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setDownloadProgress(0);
+      setLocalFilePath(null);
+
+      const sessionToken = await getSessionToken();
+      if (!sessionToken) {
+        setError('No session token available');
+        setLoading(false);
+        return;
+      }
+
+      console.log('[VideoPlayerModal] Downloading video with auth:', videoUrl);
+
+      // Determine file extension from URL
+      const urlPath = videoUrl.split('?')[0];
+      const ext = urlPath.split('.').pop()?.toLowerCase() || 'mp4';
+
+      const res = await RNFetchBlob.config({
+        fileCache: true,
+        appendExt: ext,
+      })
+        .fetch('GET', videoUrl, {
+          'X-Session-Token': sessionToken,
+        })
+        .progress((received, total) => {
+          if (total > 0) {
+            setDownloadProgress(Math.round((received / total) * 100));
+          }
+        });
+
+      const filePath = res.path();
+      console.log('[VideoPlayerModal] Video downloaded to:', filePath);
+
+      tempFileRef.current = filePath;
+
+      // Convert to file URI for WebView
+      const fileUri =
+        Platform.OS === 'android'
+          ? `file://${filePath}`
+          : filePath;
+
+      setLocalFilePath(fileUri);
+      setLoading(false);
+    } catch (err: any) {
+      console.error('[VideoPlayerModal] Download error:', err);
+      setError(`Failed to download video: ${err.message || 'Unknown error'}`);
+      setLoading(false);
+    }
+  };
 
   const handleClose = () => {
     setLoading(true);
     setError(null);
+    setLocalFilePath(null);
+    cleanupTempFile();
     onClose();
   };
 
-  // Create HTML that uses the video URL directly
-  const videoHTML = `
+  // Create HTML that plays from local file
+  const videoHTML = localFilePath
+    ? `
     <!DOCTYPE html>
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
       <style>
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
           background-color: #000000;
           display: flex;
@@ -81,36 +141,20 @@ export function VideoPlayerModal({
           max-height: 100vh;
           object-fit: contain;
         }
-        #loading {
-          position: absolute;
-          color: #a6c455;
-          font-family: monospace;
-          font-size: 14px;
-          text-align: center;
-        }
       </style>
     </head>
     <body>
-      <div id="loading">Loading video...</div>
       <video
-        id="video"
         controls
         playsinline
+        autoplay
         preload="auto"
-        src="${videoUrl}"
-        style="display:none;"
-        onloadedmetadata="document.getElementById('loading').style.display='none';this.style.display='block';window.ReactNativeWebView.postMessage('loaded');"
-        onerror="document.getElementById('loading').textContent='Failed to load video';window.ReactNativeWebView.postMessage('error');"
+        src="${localFilePath}"
       ></video>
     </body>
     </html>
-  `;
-
-  // WebView source with custom headers
-  const webViewSource = {
-    html: videoHTML,
-    baseUrl: videoUrl.substring(0, videoUrl.lastIndexOf('/'))
-  };
+  `
+    : '';
 
   return (
     <Modal
@@ -147,59 +191,46 @@ export function VideoPlayerModal({
                 color="#d97070"
               />
               <Text style={styles.errorText}>{error}</Text>
-              <Text style={styles.errorHint}>
-                The video requires authentication. Try playing it from a browser or downloading it.
-              </Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={downloadVideo}>
+                <Text style={styles.retryButtonText}>RETRY</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.closeButtonBottom}
                 onPress={handleClose}>
                 <Text style={styles.closeButtonText}>CLOSE</Text>
               </TouchableOpacity>
             </View>
-          ) : sessionToken ? (
+          ) : loading ? (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color="#a6c455" />
+              <Text style={styles.loadingText}>
+                {downloadProgress > 0
+                  ? `DOWNLOADING... ${downloadProgress}%`
+                  : 'PREPARING VIDEO...'}
+              </Text>
+            </View>
+          ) : localFilePath ? (
             <WebView
-              source={webViewSource}
+              source={{html: videoHTML, baseUrl: ''}}
               style={styles.webview}
               allowsFullscreenVideo={true}
               allowsInlineMediaPlayback={true}
               mediaPlaybackRequiresUserAction={false}
               javaScriptEnabled={true}
               domStorageEnabled={true}
-              mixedContentMode="always"
-              sharedCookiesEnabled={true}
-              thirdPartyCookiesEnabled={true}
-              onMessage={(event) => {
-                const message = event.nativeEvent.data;
-                console.log('[VideoPlayerModal] Message:', message);
-                if (message === 'loaded') {
-                  setLoading(false);
-                } else if (message === 'error') {
-                  setError('Video playback failed. The video may require authentication that WebView cannot provide.');
-                  setLoading(false);
-                }
-              }}
+              allowFileAccess={true}
+              allowFileAccessFromFileURLs={true}
+              allowUniversalAccessFromFileURLs={true}
+              originWhitelist={['*']}
               onError={(syntheticEvent) => {
-                const { nativeEvent } = syntheticEvent;
+                const {nativeEvent} = syntheticEvent;
                 console.error('[VideoPlayerModal] WebView error:', nativeEvent);
-                setError('WebView failed to load');
-                setLoading(false);
-              }}
-              onLoadEnd={() => {
-                console.log('[VideoPlayerModal] WebView load end');
+                setError('Video playback failed');
               }}
             />
-          ) : (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#a6c455" />
-              <Text style={styles.loadingText}>INITIALIZING...</Text>
-            </View>
-          )}
-          {loading && !error && sessionToken && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#a6c455" />
-              <Text style={styles.loadingText}>LOADING VIDEO...</Text>
-            </View>
-          )}
+          ) : null}
         </View>
       </View>
     </Modal>
@@ -246,10 +277,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
   },
   loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: '#000000',
   },
   loadingText: {
     color: '#a6c455',
@@ -268,25 +299,33 @@ const styles = StyleSheet.create({
     color: '#d97070',
     fontSize: 14,
     marginTop: 16,
-    marginBottom: 12,
+    marginBottom: 24,
     textAlign: 'center',
     letterSpacing: 0.5,
     fontWeight: 'bold',
   },
-  errorHint: {
-    color: '#999',
-    fontSize: 12,
-    marginBottom: 24,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  closeButtonBottom: {
+  retryButton: {
     backgroundColor: '#4d5d30',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 4,
     borderWidth: 2,
     borderColor: '#5a6b38',
+    marginBottom: 12,
+  },
+  retryButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  closeButtonBottom: {
+    backgroundColor: '#333',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#555',
   },
   closeButtonText: {
     color: '#ffffff',

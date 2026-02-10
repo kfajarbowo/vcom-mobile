@@ -3,12 +3,12 @@ import { View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, StyleShe
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Input, Button } from '../../components/ui';
 import { authService } from '../../services/authService';
 import { useAuthStore } from '../../store/authStore';
-import { setApiServer, STORAGE_KEYS, apiClient } from '../../services/apiClient';
+import { setApiServer, STORAGE_KEYS } from '../../services/apiClient';
 import { clearLicenseKey } from '../../services/licenseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
@@ -94,32 +94,43 @@ export function LoginScreen({ navigation }: Props) {
 
   const onSubmit = async (data: LoginForm) => {
     try {
+      console.log('[Login] 1. onSubmit started');
       setIsLoading(true);
 
-      console.log('[Login] Attempting login for:', data.callsign);
+      console.log('[Login] 2. Attempting login for:', data.callsign);
       const response = await authService.login(data);
+      console.log('[Login] 3. Login API success:', response.user.callsign);
 
       // Update auth store
+      console.log('[Login] 4. Updating user in store');
       setUser(response.user);
-      await setSessionToken(response.sessionToken);
 
-      console.log('[Login] Success:', response.user.callsign);
-      console.log('[Login] Session token saved');
+      console.log('[Login] 5. Saving session token');
+      await setSessionToken(response.sessionToken);
+      console.log('[Login] 6. Session token saved');
 
       // Connect to WebSocket now that we're authenticated (pass user ID directly)
+      console.log('[Login] 7. Initiating WebSocket connection');
       const { websocketService } = await import('../../services/websocket');
+
+      // We don't await this, but we catch errors
       websocketService.connect(response.user.id).catch((error) => {
         console.error('[Login] WebSocket connection error:', error);
       });
-      console.log('[Login] WebSocket connection initiated with userId:', response.user.id);
+      console.log('[Login] 8. WebSocket connection initiated with userId:', response.user.id);
 
-      // Auto-fetch and configure Gotify push notifications
-      fetchAndConfigureGotify().catch((error) => {
-        console.error('[Login] Gotify configuration error:', error);
-        // Non-critical, continue with login
-      });
+      // NOTE: Background service disabled - it creates a second WebSocket connection
+      // which interferes with the JS WebSocket. The server sends messages to only one
+      // connection, causing realtime updates to fail.
+      // TODO: Only start background service when app goes to background state
+      // console.log('[Login] 9. Starting background service');
+      // startBackgroundService(response.user.id).catch((error) => {
+      //   console.error('[Login] Background service error:', error);
+      // });
+      // console.log('[Login] 10. Background service start initiated');
+
     } catch (error) {
-      console.error('[Login] Error:', error);
+      console.error('[Login] Error caught in onSubmit:', error);
 
       const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
       console.error('[Login] Error message:', errorMessage);
@@ -145,53 +156,33 @@ export function LoginScreen({ navigation }: Props) {
         [{ text: 'OK' }]
       );
     } finally {
+      console.log('[Login] 11. Finally block - stopping loading');
       setIsLoading(false);
     }
   };
 
-  const fetchAndConfigureGotify = async () => {
+
+  const startBackgroundService = async (userId: number) => {
     try {
-      console.log('[Login] Fetching Gotify configuration...');
+      console.log('[Login] Configuring background service...');
 
-      // Get session token
-      const sessionToken = await AsyncStorage.getItem(STORAGE_KEYS.SESSION_TOKEN);
+      // Construct WebSocket URL
+      const protocol = 'ws'; // or wss if using https
+      const wsUrl = `${protocol}://${serverHost}:${serverPort}/ws`;
 
-      // Fetch token from backend using plain fetch
-      const response = await fetch(`http://${serverHost}:${serverPort}/api/user/gotify-token/full`, {
-        headers: {
-          'X-Session-Token': sessionToken || '',
-        },
-      });
+      console.log('[Login] Background service URL:', wsUrl);
+      console.log('[Login] Background service UserId:', userId);
 
-      if (!response.ok) {
-        console.warn('[Login] Failed to fetch Gotify token:', response.status);
-        return;
-      }
+      // Import service dynamically
+      const { callNotificationService } = await import('../../services/callNotificationService');
 
-      const data = await response.json();
+      // Configure and start
+      // We pass userId as string, the service handles it
+      await callNotificationService.configureBackgroundService(wsUrl, String(userId));
 
-      if (data && data.clientToken) {
-        const token = data.clientToken;
-        console.log('[Login] Gotify token received');
-
-        // Store Gotify configuration in AsyncStorage
-        await AsyncStorage.setItem('@gotify_url', `http://${serverHost}:8080`);
-        await AsyncStorage.setItem('@gotify_client_token', token);
-        await AsyncStorage.setItem('@gotify_service_enabled', 'true');
-
-        console.log('[Login] Gotify configuration saved to AsyncStorage');
-
-        // Start Gotify foreground service
-        const { callNotificationService } = await import('../../services/callNotificationService');
-        await callNotificationService.initialize();
-
-        console.log('[Login] Gotify service initialized');
-      } else {
-        console.warn('[Login] No Gotify token available from backend');
-      }
+      console.log('[Login] Background service started successfully');
     } catch (error) {
-      console.error('[Login] Failed to fetch/configure Gotify:', error);
-      // Non-critical error, don't block login
+      console.error('[Login] Failed to start background service:', error);
     }
   };
 
@@ -322,16 +313,13 @@ export function LoginScreen({ navigation }: Props) {
                     secureTextEntry
                     autoCapitalize="none"
                   />
+
                   {errors.password && (
                     <Text style={styles.errorText}>{errors.password.message}</Text>
                   )}
                 </View>
               )}
             />
-
-            <Text style={styles.disclaimer}>
-              AUTHORIZED PERSONNEL ONLY
-            </Text>
 
             <View style={styles.buttonContainer}>
               <Button
@@ -340,6 +328,8 @@ export function LoginScreen({ navigation }: Props) {
                 isLoading={isLoading}
               />
             </View>
+
+
 
             <View style={styles.buttonContainer}>
               <Button
@@ -352,6 +342,10 @@ export function LoginScreen({ navigation }: Props) {
 
             <Text style={styles.footerText}>
               ⚠ INTRANET COMMUNICATIONS ONLY - CLASSIFIED
+            </Text>
+
+            <Text style={styles.disclaimer}>
+              AUTHORIZED PERSONNEL ONLY
             </Text>
 
             {/* Testing Only - Clear License Key */}
@@ -460,6 +454,18 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     marginTop: 12,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  forgotPasswordText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1,
   },
   footerText: {
     fontSize: 9,

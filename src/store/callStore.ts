@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { MediaStream } from 'react-native-webrtc';
+import InCallManager from 'react-native-incall-manager';
 
 export type CallType = 'audio' | 'video';
 export type CallStatus = 'idle' | 'calling' | 'ringing' | 'active' | 'ended';
@@ -37,6 +38,7 @@ export interface CallState {
   isMuted: boolean;
   isVideoEnabled: boolean;
   isSpeakerEnabled: boolean;
+  isRemoteVideoEnabled: boolean;
 
   // Group call support
   isGroupCall: boolean;
@@ -67,6 +69,7 @@ export interface CallState {
   toggleMute: () => void;
   toggleVideo: () => void;
   toggleSpeaker: () => void;
+  setRemoteVideoEnabled: (enabled: boolean) => void;
   endCall: () => void;
   reset: () => void;
 
@@ -110,7 +113,8 @@ const initialState = {
   remoteStream: null,
   isMuted: false,
   isVideoEnabled: false,
-  isSpeakerEnabled: true,
+  isSpeakerEnabled: false,
+  isRemoteVideoEnabled: true,
   isGroupCall: false,
   participants: new Map<number, Participant>(),
   groupName: null,
@@ -131,6 +135,7 @@ export const useCallStore: any = create<CallState>((set) => ({
       isIncoming: false,
       status: 'calling',
       isVideoEnabled: callType === 'video',
+      isSpeakerEnabled: callType === 'video',
     }),
 
   receiveCall: ({ callId, callType, callerUserId, callerName, conversationId, offer }) =>
@@ -144,6 +149,7 @@ export const useCallStore: any = create<CallState>((set) => ({
       isIncoming: true,
       status: 'ringing',
       isVideoEnabled: callType === 'video',
+      isSpeakerEnabled: callType === 'video',
     }),
 
   setLocalStream: (stream) => set({ localStream: stream }),
@@ -156,12 +162,15 @@ export const useCallStore: any = create<CallState>((set) => ({
 
   toggleMute: () =>
     set((state) => {
+      const newMuted = !state.isMuted;
+      // Optimistic UI: update state immediately, manipulate tracks async (#8)
       if (state.localStream) {
+        // track.enabled = true means audio is ON, so when muting we set false
         state.localStream.getAudioTracks().forEach((track) => {
-          track.enabled = !state.isMuted; // Fixed: Added negation to match toggleVideo logic
+          track.enabled = !newMuted;
         });
       }
-      return { isMuted: !state.isMuted };
+      return { isMuted: newMuted };
     }),
 
   toggleVideo: () =>
@@ -177,12 +186,11 @@ export const useCallStore: any = create<CallState>((set) => ({
   toggleSpeaker: () =>
     set((state) => {
       const newSpeakerState = !state.isSpeakerEnabled;
-      // Import dynamically to avoid circular dependency
-      import('../services/webrtcService').then(({ webrtcService }) => {
-        webrtcService.setSpeakerPhone(newSpeakerState);
-      });
+      InCallManager.setForceSpeakerphoneOn(newSpeakerState);
       return { isSpeakerEnabled: newSpeakerState };
     }),
+
+  setRemoteVideoEnabled: (enabled: boolean) => set({ isRemoteVideoEnabled: enabled }),
 
   endCall: () =>
     set((state) => {
@@ -216,6 +224,7 @@ export const useCallStore: any = create<CallState>((set) => ({
       isIncoming: false,
       status: 'calling',
       isVideoEnabled: callType === 'video',
+      isSpeakerEnabled: callType === 'video',
       participants: new Map(),
     }),
 
@@ -242,6 +251,7 @@ export const useCallStore: any = create<CallState>((set) => ({
         isIncoming: true,
         status: 'ringing',
         isVideoEnabled: callType === 'video',
+        isSpeakerEnabled: callType === 'video',
         participants: participantMap,
       };
     }),
@@ -289,7 +299,7 @@ export const useCallStore: any = create<CallState>((set) => ({
         ? { ...existingParticipant, stream }
         : {
           userId,
-          userName: `User ${userId}`, // Placeholder name until proper name arrives
+          userName: '...', // Placeholder until server sends real name
           stream,
           isMuted: false,
           isVideoEnabled: state.callType === 'video',

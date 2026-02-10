@@ -1,4 +1,4 @@
-import React, {useEffect, useState, useRef, useCallback} from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,19 +16,25 @@ import {
   Alert,
   BackHandler,
   InteractionManager,
+  Dimensions,
 } from 'react-native';
-import {launchImageLibrary, launchCamera} from 'react-native-image-picker';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useChatStore, type Message} from '../store/chatStore';
-import {useAuthStore} from '../store/authStore';
-import {apiRequest, getApiBaseUrl, downloadAndOpenPDF, downloadAndOpenDocument, getSessionToken} from '../services/apiClient';
-import {websocketService} from '../services/websocket';
-import {webrtcService} from '../services/webrtcService';
-import {useCallStore} from '../store/callStore';
-import {openPermissionSettings} from '../utils/permissions';
-import {VideoPlayerModal} from './VideoPlayerModal';
-import {ImageViewerModal} from './ImageViewerModal';
+import { useChatStore, type Message } from '../store/chatStore';
+import { useAuthStore } from '../store/authStore';
+import { apiRequest, getApiBaseUrl, downloadAndOpenPDF, downloadAndOpenDocument, getSessionToken } from '../services/apiClient';
+import { websocketService } from '../services/websocket';
+import { webrtcService } from '../services/webrtcService';
+import { useCallStore } from '../store/callStore';
+import { openPermissionSettings, requestCameraPermission, requestCameraAndVideoPermissions } from '../utils/permissions';
+import { VideoPlayerModal } from './VideoPlayerModal';
+import { ImageViewerModal } from './ImageViewerModal';
+import { VoiceNoteRecorder } from './VoiceNoteRecorder';
+import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import RNFetchBlob from 'rn-fetch-blob';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -45,7 +51,7 @@ export function ChatRoom({
   otherUserId,
   onBack,
 }: ChatRoomProps) {
-  const {user} = useAuthStore();
+  const { user } = useAuthStore();
   const setMessages = useChatStore((state) => state.setMessages);
 
   // Subscribe to call state to check for active group calls
@@ -81,9 +87,9 @@ export function ChatRoom({
   const [conversationMembers, setConversationMembers] = useState<any[]>([]);
   const [displayName, setDisplayName] = useState<string>(conversationName);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
-  const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<{ url: string; name: string } | null>(null);
   const [imageViewerVisible, setImageViewerVisible] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<{url: string; name: string} | null>(null);
+  const [selectedImage, setSelectedImage] = useState<{ url: string; name: string } | null>(null);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [infoModalVisible, setInfoModalVisible] = useState(false);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
@@ -94,8 +100,18 @@ export function ChatRoom({
   const [selectedUsersToAdd, setSelectedUsersToAdd] = useState<number[]>([]);
   const [isLoadingUsersToAdd, setIsLoadingUsersToAdd] = useState(false);
   const [isAddingMembers, setIsAddingMembers] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   const [addMemberSearchQuery, setAddMemberSearchQuery] = useState('');
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [failedAttachment, setFailedAttachment] = useState<any>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [playingAudioId, setPlayingAudioId] = useState<number | null>(null);
+  const [audioProgress, setAudioProgress] = useState<string>('00:00');
+  const [audioDuration, setAudioDuration] = useState<string>('00:00');
+  const [audioProgressPercent, setAudioProgressPercent] = useState(0);
+  const audioPlayerRef = useRef(new AudioRecorderPlayer());
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
   const isJumpingToMessage = useRef(false);
@@ -113,11 +129,14 @@ export function ChatRoom({
     state.pagination.get(conversationId)
   );
 
-  // Load base URL for attachment display
+  // Load base URL and session token for attachment display
   useEffect(() => {
     getApiBaseUrl().then((url) => {
       console.log('[ChatRoom] Base URL loaded:', url);
       setBaseUrl(url);
+    });
+    getSessionToken().then((token) => {
+      setSessionToken(token);
     });
   }, []);
 
@@ -161,7 +180,8 @@ export function ChatRoom({
     console.log('[ChatRoom] Subscribing to status updates for userId:', targetUserId);
 
     const unsubscribe = websocketService.addMessageHandler((message) => {
-      if (message.type === 'user_status' && message.payload.userId === targetUserId) {
+      // Convert to numbers for consistent comparison
+      if (message.type === 'user_status' && Number(message.payload.userId) === Number(targetUserId)) {
         console.log('[ChatRoom] User status update received:', message.payload);
         setOtherUserOnline(message.payload.status === 'online');
       }
@@ -169,6 +189,103 @@ export function ChatRoom({
 
     return () => unsubscribe();
   }, [isGroup, otherUserId, conversationMembers, user?.id]);
+
+  // Fetch initial mute status from conversations list data
+  useEffect(() => {
+    const fetchMuteStatus = async () => {
+      try {
+        const conversations = await apiRequest('/api/conversations');
+        const conv = conversations?.find?.((c: any) => Number(c.id) === Number(conversationId));
+        if (conv) {
+          setIsMuted(!!conv.isMuted);
+        }
+      } catch (err) {
+        console.warn('[ChatRoom] Failed to fetch mute status:', err);
+      }
+    };
+    fetchMuteStatus();
+  }, [conversationId]);
+
+  const handleToggleMute = async () => {
+    try {
+      const newMuted = !isMuted;
+      setIsMuted(newMuted); // Optimistic UI
+      await apiRequest(`/api/conversations/${conversationId}/mute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ muted: newMuted }),
+      });
+    } catch (error) {
+      console.error('[ChatRoom] Failed to toggle mute:', error);
+      setIsMuted(!isMuted); // Revert on error
+    }
+  };
+
+  // Audio playback helpers
+  const handlePlayAudio = async (messageId: number, audioUrl: string) => {
+    try {
+      const player = audioPlayerRef.current;
+
+      // If already playing this message, stop
+      if (playingAudioId === messageId) {
+        await player.stopPlayer();
+        player.removePlayBackListener();
+        setPlayingAudioId(null);
+        setAudioProgress('00:00');
+        setAudioProgressPercent(0);
+        return;
+      }
+
+      // Stop any currently playing audio
+      if (playingAudioId !== null) {
+        await player.stopPlayer();
+        player.removePlayBackListener();
+      }
+
+      setPlayingAudioId(messageId);
+      setAudioProgress('00:00');
+      setAudioDuration('00:00');
+      setAudioProgressPercent(0);
+
+      // Download with auth then play local file
+      const token = sessionToken || await getSessionToken();
+      const res = await RNFetchBlob.config({ fileCache: true, appendExt: 'm4a' })
+        .fetch('GET', audioUrl, { 'X-Session-Token': token || '' });
+      const localPath = Platform.OS === 'android' ? `file://${res.path()}` : res.path();
+
+      await player.startPlayer(localPath);
+      player.addPlayBackListener((e: any) => {
+        const current = e.currentPosition;
+        const duration = e.duration;
+        if (duration > 0) {
+          setAudioProgressPercent(current / duration);
+        }
+        setAudioProgress(player.mmssss(Math.floor(current)).substring(0, 5));
+        setAudioDuration(player.mmssss(Math.floor(duration)).substring(0, 5));
+
+        if (current >= duration - 100 && duration > 0) {
+          player.stopPlayer();
+          player.removePlayBackListener();
+          setPlayingAudioId(null);
+          setAudioProgress('00:00');
+          setAudioProgressPercent(0);
+          // Clean up temp file
+          RNFetchBlob.fs.unlink(res.path()).catch(() => { });
+        }
+      });
+    } catch (error) {
+      console.error('[ChatRoom] Audio playback error:', error);
+      setPlayingAudioId(null);
+    }
+  };
+
+  // Clean up audio player on unmount
+  useEffect(() => {
+    return () => {
+      audioPlayerRef.current.stopPlayer().catch(() => { });
+      audioPlayerRef.current.removePlayBackListener();
+    };
+  }, []);
 
   // Scroll to unread messages or bottom on initial load
   useEffect(() => {
@@ -183,10 +300,10 @@ export function ChatRoom({
           console.log('[ChatRoom] Scrolling to first unread message at index:', firstUnreadIndex);
           // Note: Since we're using grouped messages in FlatList, we scroll to end for now
           // A more sophisticated implementation would calculate the group index
-          flatListRef.current?.scrollToEnd({animated: false});
+          flatListRef.current?.scrollToEnd({ animated: false });
         } else {
           console.log('[ChatRoom] No unread messages, scrolling to bottom');
-          flatListRef.current?.scrollToEnd({animated: false});
+          flatListRef.current?.scrollToEnd({ animated: false });
         }
         hasScrolledToInitialPosition.current = true;
       }, 100);
@@ -249,15 +366,20 @@ export function ChatRoom({
     const removeHandler = websocketService.addMessageHandler((message) => {
       // Only log and process new_message types (ignore call/status messages - they're handled by CallManager)
       if (message.type === 'new_message') {
+        // Convert to numbers for consistent comparison (WebSocket may send strings)
+        const payloadConvId = Number(message.payload?.conversationId);
+        const currentConvId = Number(conversationId);
+
         console.log('[ChatRoom] WebSocket message received:', {
           type: message.type,
-          payloadConversationId: message.payload?.conversationId,
-          currentConversationId: conversationId,
-          matches: message.payload?.conversationId === conversationId,
+          payloadConversationId: payloadConvId,
+          currentConversationId: currentConvId,
+          matches: payloadConvId === currentConvId,
         });
 
-        if (message.payload.conversationId === conversationId) {
+        if (payloadConvId === currentConvId) {
           console.log('[ChatRoom] ✅ Message matches current conversation, reloading...');
+          // Reload messages without showing loading indicator
           loadMessages(false);
         } else {
           console.log('[ChatRoom] ⚠️ Message for different conversation');
@@ -288,7 +410,7 @@ export function ChatRoom({
 
       // Set loading state in pagination
       if (loadMore) {
-        useChatStore.getState().setPaginationInfo(conversationId, {isLoading: true});
+        useChatStore.getState().setPaginationInfo(conversationId, { isLoading: true });
       }
 
       const limit = 15;
@@ -348,6 +470,10 @@ export function ChatRoom({
       console.log('[ChatRoom] Received messages:', data?.length || 0, 'total:', total, 'hasMore:', hasMore);
 
       const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any, index: number) => {
+        // Convert IDs to numbers for type consistency
+        const msgId = Number(msg.id);
+        const msgSenderId = Number(msg.senderId);
+
         // Look up sender name from conversationMembers
         let senderName = 'Unknown';
 
@@ -355,14 +481,15 @@ export function ChatRoom({
           console.log('[ChatRoom] ===== SENDER LOOKUP DEBUG =====');
           console.log('[ChatRoom] conversationMembers available:', !!conversationMembers);
           console.log('[ChatRoom] conversationMembers length:', conversationMembers?.length);
-          console.log('[ChatRoom] First message senderId:', msg.senderId, 'type:', typeof msg.senderId);
+          console.log('[ChatRoom] First message senderId:', msgSenderId, 'type:', typeof msgSenderId);
           console.log('[ChatRoom] conversationMembers:', JSON.stringify(conversationMembers, null, 2));
         }
 
         if (conversationMembers && Array.isArray(conversationMembers)) {
-          const member = conversationMembers.find(m => m.userId === msg.senderId);
+          // Use Number() for comparison to ensure type consistency
+          const member = conversationMembers.find(m => Number(m.userId) === msgSenderId);
           if (index === 0) {
-            console.log('[ChatRoom] Found member for senderId', msg.senderId, ':', !!member);
+            console.log('[ChatRoom] Found member for senderId', msgSenderId, ':', !!member);
             if (member) {
               console.log('[ChatRoom] Member data:', JSON.stringify(member, null, 2));
             }
@@ -378,8 +505,8 @@ export function ChatRoom({
         }
 
         return {
-          id: msg.id,
-          senderId: msg.senderId,
+          id: msgId,
+          senderId: msgSenderId,
           senderName: senderName,
           content: msg.content,
           timestamp: msg.timestamp || msg.createdAt,
@@ -390,8 +517,8 @@ export function ChatRoom({
           attachmentUrl: msg.attachmentUrl,
           attachmentName: msg.attachmentName,
           attachmentSize: msg.attachmentSize,
-          replyToId: msg.replyToId,
-          forwardedFromId: msg.forwardedFromId,
+          replyToId: msg.replyToId ? Number(msg.replyToId) : undefined,
+          forwardedFromId: msg.forwardedFromId ? Number(msg.forwardedFromId) : undefined,
           isDeleted: msg.isDeleted,
         };
       });
@@ -427,12 +554,12 @@ export function ChatRoom({
 
         // Scroll to end after initial load
         setTimeout(() => {
-          flatListRef.current?.scrollToEnd({animated: !showLoading});
+          flatListRef.current?.scrollToEnd({ animated: !showLoading });
         }, showLoading ? 300 : 100);
       }
     } catch (error) {
       console.error('[ChatRoom] Error loading messages:', error);
-      useChatStore.getState().setPaginationInfo(conversationId, {isLoading: false});
+      useChatStore.getState().setPaginationInfo(conversationId, { isLoading: false });
     } finally {
       if (showLoading) {
         setIsLoading(false);
@@ -494,8 +621,27 @@ export function ChatRoom({
     );
   };
 
-  const handleCameraPicker = () => {
+  const handleCameraPicker = async () => {
     setAttachmentMenuVisible(false);
+
+    // Request camera permission first
+    const hasPermission = await requestCameraPermission();
+    if (!hasPermission) {
+      Alert.alert(
+        'Permission Required',
+        'VComm needs camera permissions to take photos. Please grant permissions in your device settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => openPermissionSettings(),
+            style: 'default',
+          },
+        ]
+      );
+      return;
+    }
+
     launchCamera(
       {
         mediaType: 'photo',
@@ -514,7 +660,7 @@ export function ChatRoom({
               'Permission Required',
               'VComm needs camera permissions to take photos. Please grant permissions in your device settings.',
               [
-                {text: 'Cancel', style: 'cancel'},
+                { text: 'Cancel', style: 'cancel' },
                 {
                   text: 'Open Settings',
                   onPress: () => openPermissionSettings(),
@@ -531,8 +677,27 @@ export function ChatRoom({
     );
   };
 
-  const handleVideoCameraPicker = () => {
+  const handleVideoCameraPicker = async () => {
     setAttachmentMenuVisible(false);
+
+    // Request camera and microphone permissions first (needed for video recording)
+    const hasPermission = await requestCameraAndVideoPermissions();
+    if (!hasPermission) {
+      Alert.alert(
+        'Permission Required',
+        'VComm needs camera and microphone permissions to record videos. Please grant permissions in your device settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => openPermissionSettings(),
+            style: 'default',
+          },
+        ]
+      );
+      return;
+    }
+
     launchCamera(
       {
         mediaType: 'video',
@@ -552,7 +717,7 @@ export function ChatRoom({
               'Permission Required',
               'VComm needs camera and microphone permissions to record videos. Please grant permissions in your device settings.',
               [
-                {text: 'Cancel', style: 'cancel'},
+                { text: 'Cancel', style: 'cancel' },
                 {
                   text: 'Open Settings',
                   onPress: () => openPermissionSettings(),
@@ -612,7 +777,10 @@ export function ChatRoom({
   };
 
   const uploadAttachment = async (file: any): Promise<any> => {
-    try {
+    const uploadUrl = `${await getApiBaseUrl()}/api/attachments/upload`;
+    const sessionToken = await getSessionToken();
+
+    return new Promise((resolve, reject) => {
       const formData = new FormData();
       formData.append('file', {
         uri: file.uri,
@@ -620,49 +788,46 @@ export function ChatRoom({
         name: file.fileName || 'attachment',
       } as any);
 
-      const baseUrl = await getApiBaseUrl();
-      const sessionToken = await getSessionToken();
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadUrl);
 
-      console.log('[ChatRoom] Uploading attachment to:', `${baseUrl}/api/attachments/upload`);
-      console.log('[ChatRoom] File details:', {
-        uri: file.uri,
-        type: file.type,
-        name: file.fileName,
-      });
+      if (sessionToken) {
+        xhr.setRequestHeader('X-Session-Token', sessionToken);
+      }
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'multipart/form-data',
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const pct = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(pct);
+        }
       };
 
-      // Add session token for authentication
-      if (sessionToken) {
-        headers['X-Session-Token'] = sessionToken;
-        console.log('[ChatRoom] Added X-Session-Token header for upload');
-      } else {
-        console.warn('[ChatRoom] No session token found for upload');
-      }
+      xhr.onload = () => {
+        setUploadProgress(null);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            reject(new Error('Invalid upload response'));
+          }
+        } else {
+          // Surface multer file size error as user-friendly message
+          let errorMsg = `Upload failed (${xhr.status})`;
+          try {
+            const body = JSON.parse(xhr.responseText);
+            if (body.message) errorMsg = body.message;
+          } catch { }
+          reject(new Error(errorMsg));
+        }
+      };
 
-      const response = await fetch(`${baseUrl}/api/attachments/upload`, {
-        method: 'POST',
-        body: formData,
-        headers,
-      });
+      xhr.onerror = () => {
+        setUploadProgress(null);
+        reject(new Error('Network error during upload'));
+      };
 
-      console.log('[ChatRoom] Upload response status:', response.status);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[ChatRoom] Upload failed:', errorText);
-        throw new Error(`Failed to upload attachment: ${response.status} ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      console.log('[ChatRoom] Upload successful:', result);
-      return result;
-    } catch (error) {
-      console.error('[ChatRoom] Upload error:', error);
-      throw error;
-    }
+      xhr.send(formData);
+    });
   };
 
   const sendMessage = async () => {
@@ -712,7 +877,7 @@ export function ChatRoom({
 
       const response = await apiRequest('/api/messages', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messagePayload),
       });
 
@@ -732,27 +897,71 @@ export function ChatRoom({
       console.error('[ChatRoom] Error sending message:', error);
       setMessageText(content);
 
+      // Keep failed attachment for retry
+      if (selectedAttachment) {
+        setFailedAttachment(selectedAttachment);
+      }
+
       // Show user-friendly error message
       const errorMessage = error?.message || 'Failed to send message';
-      if (errorMessage.includes('Network request failed')) {
+      if (errorMessage.includes('Network') || errorMessage.includes('network')) {
         Alert.alert(
           'Network Error',
-          'Unable to connect to the server. Please check your network connection and try again.',
-          [{text: 'OK'}]
-        );
-      } else if (errorMessage.includes('upload attachment')) {
-        Alert.alert(
-          'Upload Failed',
-          'Failed to upload attachment. Please try again or choose a different file.',
-          [{text: 'OK'}]
+          'Unable to connect to the server. Please check your connection.',
+          [
+            { text: 'OK' },
+            selectedAttachment ? { text: 'Retry', onPress: () => sendMessage() } : null,
+          ].filter(Boolean) as any
         );
       } else {
         Alert.alert(
           'Error',
           errorMessage,
-          [{text: 'OK'}]
+          [
+            { text: 'OK' },
+            selectedAttachment ? { text: 'Retry', onPress: () => sendMessage() } : null,
+          ].filter(Boolean) as any
         );
       }
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleSendVoiceNote = async (fileUri: string, duration: number) => {
+    setIsRecordingVoice(false);
+    setIsSending(true);
+    try {
+      const file = {
+        uri: fileUri,
+        type: 'audio/mp4',
+        fileName: `voice_note_${Date.now()}.m4a`,
+      };
+      const uploadResponse = await uploadAttachment(file);
+      if (!uploadResponse.success || !uploadResponse.file) {
+        throw new Error('Voice note upload failed');
+      }
+      const attachmentData = uploadResponse.file;
+      const messagePayload: any = {
+        conversationId,
+        content: `Voice note (${duration}s)`,
+        classification: 'UNCLASSIFIED',
+        hasAttachment: true,
+        attachmentType: attachmentData.type,
+        attachmentUrl: attachmentData.url,
+        attachmentName: attachmentData.name,
+        attachmentSize: attachmentData.size,
+      };
+      await apiRequest('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(messagePayload),
+      });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await loadMessages(false);
+    } catch (error: any) {
+      console.error('[ChatRoom] Error sending voice note:', error);
+      Alert.alert('Error', 'Failed to send voice note. Please try again.');
     } finally {
       setIsSending(false);
     }
@@ -844,7 +1053,7 @@ export function ChatRoom({
         Alert.alert(
           'Connection Not Ready',
           'Please wait a moment for the connection to establish, then try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -886,7 +1095,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           `Unable to determine call recipient. Members: ${conversationMembers.length}, UserId: ${user?.id}`,
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -918,7 +1127,7 @@ export function ChatRoom({
           'Permission Required',
           'VComm needs camera and microphone permissions to make calls. Please grant permissions in your device settings.',
           [
-            {text: 'Cancel', style: 'cancel'},
+            { text: 'Cancel', style: 'cancel' },
             {
               text: 'Open Settings',
               onPress: () => openPermissionSettings(),
@@ -930,7 +1139,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           'Unable to start call. Please try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
       }
     }
@@ -948,7 +1157,7 @@ export function ChatRoom({
         Alert.alert(
           'Connection Not Ready',
           'Please wait a moment for the connection to establish, then try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -965,7 +1174,7 @@ export function ChatRoom({
         Alert.alert(
           'No Participants',
           'Cannot start a group call with no other participants.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -1009,7 +1218,7 @@ export function ChatRoom({
           'Permission Required',
           'VComm needs camera and microphone permissions to make calls. Please grant permissions in your device settings.',
           [
-            {text: 'Cancel', style: 'cancel'},
+            { text: 'Cancel', style: 'cancel' },
             {
               text: 'Open Settings',
               onPress: () => openPermissionSettings(),
@@ -1021,7 +1230,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           'Unable to start group call. Please try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
       }
     }
@@ -1186,13 +1395,13 @@ export function ChatRoom({
     try {
       const date = new Date(timestamp);
       if (isNaN(date.getTime())) return '';
-      return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
       return '';
     }
   };
 
-  const renderMessage = ({item}: {item: Message}): JSX.Element => {
+  const renderMessage = ({ item }: { item: Message }): JSX.Element => {
     if (!item) return <View />;
 
     // Ensure both are numbers for comparison
@@ -1222,8 +1431,18 @@ export function ChatRoom({
       }
       // Use the baseUrl from state
       const fullUrl = `${baseUrl}${url.startsWith('/') ? url : '/' + url}`;
-      console.log('[ChatRoom] getFullAttachmentUrl - constructed:', {url, baseUrl, fullUrl});
+      console.log('[ChatRoom] getFullAttachmentUrl - constructed:', { url, baseUrl, fullUrl });
       return fullUrl;
+    };
+
+    // Build an Image source with auth headers for authenticated /uploads endpoint
+    const getAuthImageSource = (url: string | undefined) => {
+      const fullUrl = getFullAttachmentUrl(url);
+      if (!fullUrl) return { uri: '' };
+      return {
+        uri: fullUrl,
+        headers: sessionToken ? { 'X-Session-Token': sessionToken } : undefined,
+      };
     };
 
     return (
@@ -1266,7 +1485,7 @@ export function ChatRoom({
                 <Text style={styles.repliedMessageSender}>
                   {repliedMessage.senderName?.toUpperCase() || 'UNKNOWN'}
                 </Text>
-                <Text style={styles.repliedMessageText} numberOfLines={2}>
+                <Text style={styles.repliedMessageText} numberOfLines={1}>
                   {repliedMessage.content}
                 </Text>
               </View>
@@ -1280,33 +1499,24 @@ export function ChatRoom({
                   <TouchableOpacity
                     onPress={() => {
                       const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
-                      console.log('[ChatRoom] Image clicked, fullUrl:', fullUrl);
-                      console.log('[ChatRoom] baseUrl:', baseUrl);
-                      console.log('[ChatRoom] item.attachmentUrl:', item.attachmentUrl);
                       if (fullUrl) {
                         setSelectedImage({
                           url: fullUrl,
                           name: item.attachmentName || 'Image',
                         });
                         setImageViewerVisible(true);
-                      } else {
-                        console.warn('[ChatRoom] Full URL is empty, cannot open image viewer');
                       }
                     }}
                     activeOpacity={0.8}
                     style={styles.imageClickable}
                     disabled={false}>
                     <Image
-                      source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
+                      source={getAuthImageSource(item.attachmentUrl)}
                       style={styles.attachmentImage}
                       resizeMode="cover"
                       pointerEvents="none"
                       onError={(error) => {
                         console.log('[ChatRoom] Image load error:', error.nativeEvent);
-                        console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
-                      }}
-                      onLoad={() => {
-                        console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
                       }}
                     />
                   </TouchableOpacity>
@@ -1329,12 +1539,49 @@ export function ChatRoom({
                     }
                   }}>
                   <View style={styles.videoThumbnail}>
-                    <MaterialCommunityIcons name="play-circle-outline" size={64} color="#a6c455" />
+                    {item.attachmentThumbnailUrl && baseUrl ? (
+                      <Image
+                        source={getAuthImageSource(item.attachmentThumbnailUrl)}
+                        style={styles.videoThumbnailImage}
+                        resizeMode="cover"
+                      />
+                    ) : null}
+                    <View style={styles.playOverlay}>
+                      <MaterialCommunityIcons name="play-circle-outline" size={48} color="#fff" />
+                    </View>
                   </View>
                   <Text style={styles.videoFileName} numberOfLines={1}>
                     {item.attachmentName || 'Video'}
                   </Text>
                 </TouchableOpacity>
+              ) : item.attachmentType === 'audio' ? (
+                <View style={styles.audioAttachment}>
+                  <TouchableOpacity
+                    style={styles.audioPlayButton}
+                    onPress={() => {
+                      const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                      if (fullUrl) {
+                        handlePlayAudio(item.id, fullUrl);
+                      }
+                    }}>
+                    <MaterialCommunityIcons
+                      name={playingAudioId === item.id ? 'stop-circle' : 'play-circle'}
+                      size={36}
+                      color="#a6c455"
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.audioInfo}>
+                    <View style={styles.audioWaveform}>
+                      <View style={[
+                        styles.audioProgressBar,
+                        { width: playingAudioId === item.id ? `${audioProgressPercent * 100}%` : '0%' },
+                      ]} />
+                    </View>
+                    <Text style={styles.audioTime}>
+                      {playingAudioId === item.id ? `${audioProgress} / ${audioDuration}` : (item.attachmentName || 'Voice note')}
+                    </Text>
+                  </View>
+                </View>
               ) : (
                 (() => {
                   const docIcon = getDocumentIcon(item.attachmentName, item.attachmentType);
@@ -1402,14 +1649,14 @@ export function ChatRoom({
   );
 
   const groupMessagesByDate = (messages: Message[]) => {
-    const grouped: {date: string; messages: Message[]}[] = [];
+    const grouped: { date: string; messages: Message[] }[] = [];
     let currentDate = '';
 
     messages.forEach((message) => {
       const messageDate = new Date(message.timestamp).toDateString();
 
       if (messageDate !== currentDate) {
-        grouped.push({date: messageDate, messages: [message]});
+        grouped.push({ date: messageDate, messages: [message] });
         currentDate = messageDate;
       } else {
         grouped[grouped.length - 1].messages.push(message);
@@ -1529,9 +1776,9 @@ export function ChatRoom({
         <View style={styles.headerActions}>
           {/* Show Rejoin button if there's an active group call for this conversation */}
           {isGroup &&
-           callState.status === 'active' &&
-           callState.isGroupCall &&
-           callState.conversationId === conversationId ? (
+            callState.status === 'active' &&
+            callState.isGroupCall &&
+            callState.conversationId === conversationId ? (
             <TouchableOpacity
               style={styles.rejoinButton}
               onPress={() => handleStartCall('video')}>
@@ -1564,6 +1811,15 @@ export function ChatRoom({
               </TouchableOpacity>
             </>
           )}
+          <TouchableOpacity
+            style={styles.callButton}
+            onPress={handleToggleMute}>
+            <MaterialCommunityIcons
+              name={isMuted ? 'bell-off' : 'bell'}
+              size={18}
+              color={isMuted ? '#888' : '#a6c455'}
+            />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -1578,14 +1834,17 @@ export function ChatRoom({
           ref={flatListRef}
           data={groupedMessages}
           extraData={`${messages.length}-${baseUrl}-${highlightedMessageId}`}
-          removeClippedSubviews={false}
+          removeClippedSubviews={true}
           keyboardShouldPersistTaps="handled"
-          renderItem={({item: group}) => (
+          windowSize={10}
+          maxToRenderPerBatch={10}
+          initialNumToRender={15}
+          renderItem={({ item: group }) => (
             <View>
               {renderDateSeparator(group.date)}
               {group.messages.map((message: Message, index: number) => (
                 <React.Fragment key={`${message.id}-${index}`}>
-                  {renderMessage({item: message})}
+                  {renderMessage({ item: message })}
                 </React.Fragment>
               ))}
             </View>
@@ -1598,7 +1857,7 @@ export function ChatRoom({
             // AND we're not currently jumping to a specific message
             // This prevents scrolling during initial load and interfering with jump-to-message
             if (hasScrolledToInitialPosition.current && !isJumpingToMessage.current) {
-              flatListRef.current?.scrollToEnd({animated: true});
+              flatListRef.current?.scrollToEnd({ animated: true });
             }
           }}
           onScroll={(event) => {
@@ -1669,7 +1928,7 @@ export function ChatRoom({
             <View style={styles.attachmentPreviewContent}>
               {selectedAttachment.type?.startsWith('image/') ? (
                 <Image
-                  source={{uri: selectedAttachment.uri}}
+                  source={{ uri: selectedAttachment.uri }}
                   style={styles.previewImage}
                 />
               ) : selectedAttachment.type?.startsWith('video/') ? (
@@ -1755,46 +2014,89 @@ export function ChatRoom({
           </View>
         )}
 
+        {/* Upload progress bar (#14) */}
+        {uploadProgress !== null && (
+          <View style={styles.uploadProgressContainer}>
+            <View style={[styles.uploadProgressBar, { width: `${uploadProgress}%` }]} />
+            <Text style={styles.uploadProgressText}>{uploadProgress}%</Text>
+          </View>
+        )}
+
+        {/* Retry failed attachment */}
+        {failedAttachment && !selectedAttachment && (
+          <TouchableOpacity
+            style={styles.retryBanner}
+            onPress={() => {
+              setSelectedAttachment(failedAttachment);
+              setFailedAttachment(null);
+            }}>
+            <MaterialCommunityIcons name="refresh" size={16} color="#ff9800" />
+            <Text style={styles.retryText}>Upload failed. Tap to retry.</Text>
+          </TouchableOpacity>
+        )}
+
         <View style={styles.inputWrapper}>
-          <TouchableOpacity
-            style={styles.attachButton}
-            onPress={handleAttachment}
-            disabled={isSending}>
-            <MaterialCommunityIcons
-              name={attachmentMenuVisible ? "close" : "paperclip"}
-              size={22}
-              color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
+          {isRecordingVoice ? (
+            <VoiceNoteRecorder
+              onSend={handleSendVoiceNote}
+              onCancel={() => setIsRecordingVoice(false)}
             />
-          </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.attachButton}
+                onPress={handleAttachment}
+                disabled={isSending}>
+                <MaterialCommunityIcons
+                  name={attachmentMenuVisible ? "close" : "paperclip"}
+                  size={22}
+                  color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
+                />
+              </TouchableOpacity>
 
-          <TextInput
-            style={styles.input}
-            placeholder="ENTER MESSAGE..."
-            placeholderTextColor="#666"
-            value={messageText}
-            onChangeText={setMessageText}
-            multiline
-            maxLength={1000}
-          />
-
-          <TouchableOpacity
-            onPress={sendMessage}
-            disabled={(!messageText.trim() && !selectedAttachment) || isSending}
-            style={[
-              styles.sendButton,
-              ((!messageText.trim() && !selectedAttachment) || isSending) &&
-                styles.sendButtonDisabled,
-            ]}>
-            {isSending ? (
-              <ActivityIndicator size="small" color="#a6c455" />
-            ) : (
-              <MaterialCommunityIcons
-                name="send"
-                size={22}
-                color="#a6c455"
+              <TextInput
+                style={styles.input}
+                placeholder="ENTER MESSAGE..."
+                placeholderTextColor="#666"
+                value={messageText}
+                onChangeText={setMessageText}
+                multiline
+                maxLength={1000}
               />
-            )}
-          </TouchableOpacity>
+
+              {messageText.trim() || selectedAttachment ? (
+                <TouchableOpacity
+                  onPress={sendMessage}
+                  disabled={(!messageText.trim() && !selectedAttachment) || isSending}
+                  style={[
+                    styles.sendButton,
+                    ((!messageText.trim() && !selectedAttachment) || isSending) &&
+                    styles.sendButtonDisabled,
+                  ]}>
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#a6c455" />
+                  ) : (
+                    <MaterialCommunityIcons
+                      name="send"
+                      size={22}
+                      color="#a6c455"
+                    />
+                  )}
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => setIsRecordingVoice(true)}
+                  disabled={isSending}
+                  style={styles.sendButton}>
+                  <MaterialCommunityIcons
+                    name="microphone"
+                    size={22}
+                    color={isSending ? '#3a3a3a' : '#a6c455'}
+                  />
+                </TouchableOpacity>
+              )}
+            </>
+          )}
         </View>
       </View>
 
@@ -1849,7 +2151,7 @@ export function ChatRoom({
                 setSelectedMenuMessage(null);
               }}>
               <MaterialCommunityIcons name="delete" size={20} color="#ff4444" />
-              <Text style={[styles.menuItemText, {color: '#ff4444'}]}>DELETE</Text>
+              <Text style={[styles.menuItemText, { color: '#ff4444' }]}>DELETE</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1890,7 +2192,7 @@ export function ChatRoom({
             <FlatList
               data={forwardConversations}
               keyExtractor={(item) => String(item.id)}
-              renderItem={({item}) => (
+              renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.conversationItem}
                   onPress={() => handleForwardToConversation(item.id)}>
@@ -1970,7 +2272,7 @@ export function ChatRoom({
                   onPress={() => performDelete(true)}>
                   <MaterialCommunityIcons name="delete" size={20} color="#ff4444" />
                   <View style={styles.deleteOptionText}>
-                    <Text style={[styles.deleteOptionTitle, {color: '#ff4444'}]}>
+                    <Text style={[styles.deleteOptionTitle, { color: '#ff4444' }]}>
                       DELETE FOR EVERYONE
                     </Text>
                     <Text style={styles.deleteOptionDesc}>
@@ -2160,7 +2462,7 @@ export function ChatRoom({
                   <FlatList
                     data={conversationMembers}
                     keyExtractor={(item) => String(item.userId)}
-                    renderItem={({item}) => {
+                    renderItem={({ item }) => {
                       const currentMember = conversationMembers.find(m => m.userId === user?.id);
                       const isCurrentUserAdmin = currentMember?.role === 'admin';
                       const isMemberAdmin = item.role === 'admin';
@@ -2335,7 +2637,7 @@ export function ChatRoom({
               <FlatList
                 data={getFilteredUsersToAdd()}
                 keyExtractor={(item) => String(item.id)}
-                renderItem={({item}) => {
+                renderItem={({ item }) => {
                   const isSelected = selectedUsersToAdd.includes(item.id);
                   return (
                     <TouchableOpacity
@@ -2632,6 +2934,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     letterSpacing: 0.5,
     marginBottom: 4,
+    paddingRight: 24,
   },
   messageText: {
     color: '#ffffff',
@@ -2861,6 +3164,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1a1a',
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
+  },
+  videoThumbnailImage: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+  },
+  playOverlay: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    borderRadius: 30,
+    width: 60,
+    height: 60,
   },
   videoFileName: {
     color: '#a6c455',
@@ -2887,6 +3204,39 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     flex: 1,
+  },
+  audioAttachment: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    padding: 8,
+    minWidth: 200,
+  },
+  audioPlayButton: {
+    marginRight: 8,
+  },
+  audioInfo: {
+    flex: 1,
+  },
+  audioWaveform: {
+    height: 4,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  audioProgressBar: {
+    height: '100%',
+    backgroundColor: '#a6c455',
+    borderRadius: 2,
+  },
+  audioTime: {
+    color: '#888',
+    fontSize: 10,
+    letterSpacing: 0.3,
   },
   attachmentMenuOverlay: {
     position: 'absolute',
@@ -3045,6 +3395,8 @@ const styles = StyleSheet.create({
     borderColor: '#4d5d30',
     padding: 8,
     minWidth: 200,
+    maxHeight: SCREEN_HEIGHT * 0.5,
+    maxWidth: SCREEN_WIDTH * 0.8,
   },
   menuItem: {
     flexDirection: 'row',
@@ -3574,5 +3926,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     letterSpacing: 0.5,
+  },
+  uploadProgressContainer: {
+    height: 20,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 4,
+    marginHorizontal: 12,
+    marginBottom: 4,
+    overflow: 'hidden',
+    justifyContent: 'center',
+  },
+  uploadProgressBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: '#4d5d30',
+    borderRadius: 4,
+  },
+  uploadProgressText: {
+    color: '#a6c455',
+    fontSize: 10,
+    textAlign: 'center',
+    fontWeight: 'bold',
+  },
+  retryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a1a00',
+    paddingVertical: 6,
+    gap: 6,
+  },
+  retryText: {
+    color: '#ff9800',
+    fontSize: 12,
   },
 });

@@ -20,40 +20,20 @@ interface ChatListProps {
 
 export function ChatList({onSelectChat}: ChatListProps) {
   const {user} = useAuthStore();
-  const {conversations, setConversations} = useChatStore();
+  // Use proper Zustand selectors for reactive updates
+  const conversations = useChatStore((state) => state.conversations);
+  const setConversations = useChatStore((state) => state.setConversations);
   const [isLoading, setIsLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [userStatuses, setUserStatuses] = useState<Map<number, string>>(new Map());
   const [showNewConversation, setShowNewConversation] = useState(false);
 
-  // Handle user status updates from WebSocket
-  const handleUserStatus = useCallback((message: any) => {
-    if (message.type === 'user_status') {
-      const {userId, status} = message.payload;
-      console.log('[ChatList] User status update:', userId, status);
-      setUserStatuses(prev => {
-        const newMap = new Map(prev);
-        newMap.set(userId, status);
-        return newMap;
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    console.log('[ChatList] Component mounted, loading data...');
-    loadConversations();
-    loadUsers();
-
-    // Subscribe to WebSocket messages for user status updates
-    const unsubscribe = websocketService.addMessageHandler(handleUserStatus);
-    return () => {
-      unsubscribe();
-    };
-  }, [handleUserStatus]);
-
-  const loadConversations = async () => {
+  // Load conversations from API
+  const loadConversations = useCallback(async (showLoading: boolean = true) => {
     try {
-      setIsLoading(true);
+      if (showLoading) {
+        setIsLoading(true);
+      }
       console.log('[ChatList] Fetching conversations...');
       const data = await apiRequest('/api/conversations');
       console.log('[ChatList] Received conversations:', data?.length || 0);
@@ -61,16 +41,20 @@ export function ChatList({onSelectChat}: ChatListProps) {
       const formattedConversations: Conversation[] = (Array.isArray(data) ? data : [])
         .filter((conv: any) => conv && conv.id) // Filter out invalid items
         .map((conv: any) => {
-          console.log('[ChatList] Mapping conversation:', conv.id, 'otherUserId:', conv.otherUserId, 'isGroup:', conv.isGroup);
+          // Convert all IDs to numbers for type consistency
+          const convId = Number(conv.id);
+          const otherUserId = conv.otherUserId ? Number(conv.otherUserId) : undefined;
+          console.log('[ChatList] Mapping conversation:', convId, 'otherUserId:', otherUserId, 'isGroup:', conv.isGroup);
           return {
-            id: conv.id,
+            id: convId,
             name: conv.name || 'Unnamed Chat',
             isGroup: conv.isGroup || false,
             lastMessage: conv.lastMessage || '',
             lastMessageTime: conv.lastMessageTime || conv.updatedAt || '',
-            unreadCount: conv.unreadCount || 0,
-            members: conv.memberCount || 2,
-            otherUserId: conv.otherUserId, // Include otherUserId for direct chats
+            unreadCount: Number(conv.unreadCount) || 0,
+            members: Number(conv.memberCount) || 2,
+            otherUserId: otherUserId,
+            isMuted: !!conv.isMuted,
           };
         })
         .sort((a, b) => {
@@ -85,20 +69,64 @@ export function ChatList({onSelectChat}: ChatListProps) {
     } catch (error) {
       console.error('[ChatList] Error loading conversations:', error);
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
-  };
+  }, [setConversations]);
+
+  // Handle user status updates from WebSocket
+  const handleUserStatus = useCallback((message: any) => {
+    if (message.type === 'user_status') {
+      // Convert userId to number for consistent Map key type
+      const userId = Number(message.payload.userId);
+      const status = message.payload.status;
+      console.log('[ChatList] User status update:', userId, status);
+      setUserStatuses(prev => {
+        const newMap = new Map(prev);
+        newMap.set(userId, status);
+        return newMap;
+      });
+    }
+  }, []);
+
+  // Handle new message updates from WebSocket to update conversation list
+  const handleNewMessage = useCallback((message: any) => {
+    if (message.type === 'new_message') {
+      const payload = message.payload;
+      const conversationId = Number(payload.conversationId);
+      console.log('[ChatList] New message received for conversation:', conversationId);
+
+      // Force refresh conversations to get updated lastMessage and unreadCount
+      // Pass false to avoid showing loading indicator for background updates
+      loadConversations(false);
+    }
+  }, [loadConversations]);
+
+  useEffect(() => {
+    console.log('[ChatList] Component mounted, loading data...');
+    loadConversations();
+    loadUsers();
+
+    // Subscribe to WebSocket messages for user status and new message updates
+    const unsubscribeStatus = websocketService.addMessageHandler(handleUserStatus);
+    const unsubscribeMessage = websocketService.addMessageHandler(handleNewMessage);
+    return () => {
+      unsubscribeStatus();
+      unsubscribeMessage();
+    };
+  }, [loadConversations, handleUserStatus, handleNewMessage]);
 
   const loadUsers = async () => {
     try {
       const users = await apiRequest('/api/all-users');
       setAllUsers(users);
 
-      // Initialize user statuses from API response
+      // Initialize user statuses from API response (convert IDs to numbers)
       const statusMap = new Map<number, string>();
       users.forEach((u: any) => {
         if (u.id && u.status) {
-          statusMap.set(u.id, u.status);
+          statusMap.set(Number(u.id), u.status);
         }
       });
       setUserStatuses(statusMap);
@@ -214,6 +242,9 @@ export function ChatList({onSelectChat}: ChatListProps) {
                   <View style={styles.groupBadge}>
                     <Text style={styles.groupBadgeText}>GROUP</Text>
                   </View>
+                )}
+                {item.isMuted && (
+                  <MaterialCommunityIcons name="bell-off" size={14} color="#888" style={{marginLeft: 4}} />
                 )}
               </View>
               {timestamp && (

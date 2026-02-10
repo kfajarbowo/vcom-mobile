@@ -27,7 +27,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         const val TAG = "CallNotificationModule"
         const val CHANNEL_ID = "incoming_calls"
         const val CHANNEL_NAME = "Incoming Calls"
+        const val MSG_CHANNEL_ID = "chat_messages"
+        const val MSG_CHANNEL_NAME = "Chat Messages"
         const val NOTIFICATION_ID = 1001
+        
         const val REQUEST_CODE_ACCEPT = 1
         const val REQUEST_CODE_REJECT = 2
         const val REQUEST_CODE_FULLSCREEN = 3
@@ -44,6 +47,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
     init {
         instance = this
         createNotificationChannel()
+        createMessageNotificationChannel()
     }
 
     override fun getName(): String = "CallNotificationModule"
@@ -79,6 +83,24 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun createMessageNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val channel = NotificationChannel(MSG_CHANNEL_ID, MSG_CHANNEL_NAME, importance).apply {
+                description = "Chat message notifications"
+                setShowBadge(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 500)
+                setBypassDnd(false)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+            }
+
+            val notificationManager = reactApplicationContext
+                .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
     @ReactMethod
     fun showIncomingCallNotification(
         callId: String,
@@ -89,139 +111,212 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         promise: Promise
     ) {
         try {
-            Log.d(TAG, "Showing incoming call notification: $callerName, $callType")
+            Log.d(TAG, "Showing incoming call notification for callId: $callId")
+            showIncomingCallNotificationInternal(callId, callerId, callerName, callType, isGroupCall, null)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error showing incoming call notification: ${e.message}")
+            promise.reject("ERROR", e.message)
+        }
+    }
 
-            val context = reactApplicationContext
+    fun showIncomingCallNotificationInternal(
+        callId: String,
+        callerId: String,
+        callerName: String,
+        callType: String,
+        isGroupCall: Boolean,
+        payload: String?
+    ) {
+        val context = reactApplicationContext
 
-            // Create full-screen intent for IncomingCallActivity
-            val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_NO_USER_ACTION or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("callId", callId)
-                putExtra("callerId", callerId)
-                putExtra("callerName", callerName)
-                putExtra("callType", callType)
-                putExtra("isGroupCall", isGroupCall)
+        // Full-screen intent for when the screen is locked
+        val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_NO_USER_ACTION or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("callId", callId)
+            putExtra("callerId", callerId)
+            putExtra("callerName", callerName)
+            putExtra("callType", callType)
+            putExtra("isGroupCall", isGroupCall)
+            if (payload != null) {
+                putExtra("payload", payload)
             }
+        }
 
-            val fullScreenPendingIntent = PendingIntent.getActivity(
-                context,
-                REQUEST_CODE_FULLSCREEN,
-                fullScreenIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_FULLSCREEN,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-            // Accept action intent
-            val acceptIntent = Intent(context, CallActionReceiver::class.java).apply {
-                action = "com.vcommmobile.ACCEPT_CALL"
-                putExtra("callId", callId)
-                putExtra("callerId", callerId)
-                putExtra("callerName", callerName)
-                putExtra("callType", callType)
-                putExtra("isGroupCall", isGroupCall)
+        // Accept action
+        val acceptIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = "com.vcommmobile.ACCEPT_CALL"
+            putExtra("callId", callId)
+            putExtra("callerId", callerId)
+            putExtra("callerName", callerName)
+            putExtra("callType", callType)
+            putExtra("isGroupCall", isGroupCall)
+            if (payload != null) {
+                putExtra("payload", payload)
             }
-            val acceptPendingIntent = PendingIntent.getBroadcast(
-                context,
-                REQUEST_CODE_ACCEPT,
-                acceptIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        }
+        val acceptPendingIntent = PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_ACCEPT,
+            acceptIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-            // Reject action intent
-            val rejectIntent = Intent(context, CallActionReceiver::class.java).apply {
-                action = "com.vcommmobile.REJECT_CALL"
-                putExtra("callId", callId)
-                putExtra("callerId", callerId)
-                putExtra("callerName", callerName)
-                putExtra("callType", callType)
-                putExtra("isGroupCall", isGroupCall)
-            }
-            val rejectPendingIntent = PendingIntent.getBroadcast(
-                context,
-                REQUEST_CODE_REJECT,
-                rejectIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        // Reject action
+        val rejectIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = "com.vcommmobile.REJECT_CALL"
+            putExtra("callId", callId)
+            putExtra("callerId", callerId)
+            putExtra("callerName", callerName)
+            putExtra("callType", callType)
+            putExtra("isGroupCall", isGroupCall)
+        }
+        val rejectPendingIntent = PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_REJECT,
+            rejectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-            // Build notification
-            val callTypeText = if (callType == "video") "Video Call" else "Voice Call"
-            val groupText = if (isGroupCall) " (Group)" else ""
+        // Get ringtone URI
+        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
 
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val callTypeLabel = if (callType == "video") "Video Call" else "Voice Call"
+        val groupLabel = if (isGroupCall) " (Group)" else ""
 
-            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_menu_call)
-                .setContentTitle("$callerName$groupText")
-                .setContentText("Incoming $callTypeText")
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setFullScreenIntent(fullScreenPendingIntent, true)
-                .setContentIntent(fullScreenPendingIntent)
-                .setOngoing(true)
-                .setAutoCancel(false)
-                .setTimeoutAfter(30000) // 30 second timeout
-                .setSound(ringtoneUri)
-                .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .addAction(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    "Reject",
-                    fullScreenPendingIntent
-                )
-                .addAction(
-                    android.R.drawable.ic_menu_call,
-                    "Accept",
-                    fullScreenPendingIntent
-                )
-                .build()
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle("Incoming $callTypeLabel$groupLabel")
+            .setContentText(callerName)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setTimeoutAfter(30000) // Auto-dismiss after 30 seconds
+            .setSound(ringtoneUri)
+            .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
+            // .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", rejectPendingIntent)
+            // .addAction(android.R.drawable.ic_menu_call, "Answer", acceptPendingIntent)
+            .build()
 
-            // Check notification permission for Android 13+
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                    Log.w(TAG, "POST_NOTIFICATIONS permission not granted")
-                    promise.resolve(false)
-                    return
+        // Check permission for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "Notification permission not granted, trying to start activity directly")
+                // Try to start activity as fallback (may be blocked by Android)
+                try {
+                    val intent = Intent(context, IncomingCallActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("callId", callId)
+                        putExtra("callerId", callerId)
+                        putExtra("callerName", callerName)
+                        putExtra("callType", callType)
+                        putExtra("isGroupCall", isGroupCall)
+                        if (payload != null) {
+                            putExtra("payload", payload)
+                        }
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start activity: ${e.message}")
                 }
+                return
             }
+        }
 
-            val notificationManager = NotificationManagerCompat.from(context)
-            notificationManager.notify(NOTIFICATION_ID, notification)
+        val notificationManager = NotificationManagerCompat.from(context)
+        notificationManager.notify(NOTIFICATION_ID, notification)
+        Log.d(TAG, "Incoming call notification posted with ID: $NOTIFICATION_ID")
+    }
 
-            Log.d(TAG, "Notification shown successfully")
+    @ReactMethod
+    fun showChatNotification(
+        title: String,
+        message: String,
+        conversationId: String,
+        senderId: String,
+        promise: Promise
+    ) {
+        try {
+            showChatNotificationInternal(title, message, conversationId, senderId)
             promise.resolve(true)
         } catch (e: Exception) {
-            Log.e(TAG, "Error showing notification: ${e.message}")
+            Log.e(TAG, "Error showing chat notification: ${e.message}")
             promise.reject("ERROR", e.message)
         }
     }
 
-    @ReactMethod
-    fun cancelCallNotification(promise: Promise) {
-        try {
-            val notificationManager = NotificationManagerCompat.from(reactApplicationContext)
-            notificationManager.cancel(NOTIFICATION_ID)
+    fun showChatNotificationInternal(
+        title: String,
+        message: String,
+        conversationId: String,
+        senderId: String
+    ) {
+        Log.d(TAG, "Showing chat notification from $title")
 
-            // Also close IncomingCallActivity if open
-            val intent = Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY")
-            reactApplicationContext.sendBroadcast(intent)
-
-            promise.resolve(true)
-        } catch (e: Exception) {
-            promise.reject("ERROR", e.message)
+        val context = reactApplicationContext
+        
+        // Pending intent to open app
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("conversationId", conversationId) // Deep link param
         }
+        
+        val pendingIntent = PendingIntent.getActivity(
+            context, 
+            System.currentTimeMillis().toInt(), 
+            intent, 
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notificationId = conversationId.hashCode()
+
+        val notification = NotificationCompat.Builder(context, MSG_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setVibrate(longArrayOf(0, 500))
+            .setDefaults(NotificationCompat.DEFAULT_SOUND)
+            .build()
+
+        // Check permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+        }
+
+        val notificationManager = NotificationManagerCompat.from(context)
+        notificationManager.notify(notificationId, notification)
     }
 
     @ReactMethod
-    fun startGotifyService(gotifyUrl: String, clientToken: String, promise: Promise) {
+    fun startBackgroundService(url: String, tokenOrUserId: String, promise: Promise) {
         try {
-            Log.d(TAG, "Starting Gotify service with URL: $gotifyUrl")
-            val intent = Intent(reactApplicationContext, GotifyForegroundService::class.java).apply {
+            Log.d(TAG, "Starting background service with URL: $url")
+            val intent = Intent(reactApplicationContext, BackgroundWebSocketService::class.java).apply {
                 action = "START"
-                putExtra("gotifyUrl", gotifyUrl)
-                putExtra("clientToken", clientToken)
+                putExtra("url", url)
+                putExtra("tokenOrUserId", tokenOrUserId)
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -232,15 +327,15 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
 
             promise.resolve(true)
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting Gotify service: ${e.message}")
+            Log.e(TAG, "Error starting background service: ${e.message}")
             promise.reject("ERROR", e.message)
         }
     }
 
     @ReactMethod
-    fun stopGotifyService(promise: Promise) {
+    fun stopBackgroundService(promise: Promise) {
         try {
-            val intent = Intent(reactApplicationContext, GotifyForegroundService::class.java).apply {
+            val intent = Intent(reactApplicationContext, BackgroundWebSocketService::class.java).apply {
                 action = "STOP"
             }
             reactApplicationContext.stopService(intent)

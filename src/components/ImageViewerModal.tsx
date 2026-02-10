@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import {getSessionToken} from '../services/apiClient';
 
 interface ImageViewerModalProps {
   visible: boolean;
@@ -26,11 +27,20 @@ export function ImageViewerModal({
   onClose,
 }: ImageViewerModalProps) {
   const [loading, setLoading] = useState(true);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (visible) {
+      getSessionToken().then(setSessionToken);
+    }
+  }, [visible]);
 
   const images = [
     {
       url: imageUrl,
-      props: {},
+      props: {
+        headers: sessionToken ? {'X-Session-Token': sessionToken} : undefined,
+      },
     },
   ];
 

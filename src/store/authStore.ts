@@ -1,4 +1,4 @@
-import {create} from 'zustand';
+import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface User {
@@ -25,7 +25,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   sessionToken: null,
   isLoading: true,
 
-  setUser: (user) => set({user}),
+  setUser: (user) => set({ user }),
 
   setSessionToken: async (token) => {
     if (token) {
@@ -33,15 +33,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     } else {
       await AsyncStorage.removeItem('vcomm_session_token');
     }
-    set({sessionToken: token});
+    set({ sessionToken: token });
   },
 
   logout: async () => {
     await AsyncStorage.removeItem('vcomm_session_token');
-    set({user: null, sessionToken: null});
+    set({ user: null, sessionToken: null });
 
     // Disconnect WebSocket on logout
-    const {websocketService} = await import('../services/websocket');
+    const { websocketService } = await import('../services/websocket');
     websocketService.disconnect();
     console.log('[Auth] WebSocket disconnected on logout');
   },
@@ -53,22 +53,28 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (token) {
         // Fetch user data from server to verify token and get user info
         try {
-          const {apiRequest} = await import('../services/apiClient');
+          const { apiRequest } = await import('../services/apiClient');
           const userData = await apiRequest<User>('/api/auth/user');
           console.log('[Auth] User data loaded:', userData);
-          set({sessionToken: token, user: userData, isLoading: false});
+          set({ sessionToken: token, user: userData, isLoading: false });
         } catch (error) {
-          console.error('[Auth] Failed to fetch user data, token may be invalid:', error);
+          console.error('[Auth] Failed to fetch user data. Error details:', error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
+          if (errorMessage.includes('Aborted') || errorMessage.includes('Network request failed')) {
+            console.log('[Auth] Network timeout or error. Logging out to prevent hang.');
+          }
+
           // Clear invalid token
           await AsyncStorage.removeItem('vcomm_session_token');
-          set({sessionToken: null, user: null, isLoading: false});
+          set({ sessionToken: null, user: null, isLoading: false });
         }
       } else {
-        set({sessionToken: null, user: null, isLoading: false});
+        set({ sessionToken: null, user: null, isLoading: false });
       }
     } catch (error) {
       console.error('[Auth] Failed to initialize auth:', error);
-      set({isLoading: false});
+      set({ isLoading: false });
     }
   },
 }));

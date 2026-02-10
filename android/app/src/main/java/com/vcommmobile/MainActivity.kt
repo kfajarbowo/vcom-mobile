@@ -2,6 +2,7 @@ package com.vcommmobile
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.bridge.Arguments
@@ -9,6 +10,20 @@ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnable
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 class MainActivity : ReactActivity() {
+
+  companion object {
+    private const val TAG = "MainActivity"
+
+    // Static flag to track if the app is in foreground
+    @Volatile
+    var isAppInForeground: Boolean = false
+      private set
+
+    fun setAppForegroundState(inForeground: Boolean) {
+      isAppInForeground = inForeground
+      Log.d(TAG, "App foreground state changed: $inForeground")
+    }
+  }
 
   /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule
@@ -28,6 +43,16 @@ class MainActivity : ReactActivity() {
     handleCallIntent(intent)
   }
 
+  override fun onResume() {
+    super.onResume()
+    setAppForegroundState(true)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    setAppForegroundState(false)
+  }
+
   override fun onNewIntent(intent: Intent?) {
     super.onNewIntent(intent)
     intent?.let { handleCallIntent(it) }
@@ -41,6 +66,9 @@ class MainActivity : ReactActivity() {
       val callerName = intent.getStringExtra("callerName") ?: ""
       val callType = intent.getStringExtra("callType") ?: "audio"
       val isGroupCall = intent.getBooleanExtra("isGroupCall", false)
+      val payload = intent.getStringExtra("payload")
+
+      Log.d(TAG, "Handling call intent: action=$callAction, callId=$callId, hasPayload=${payload != null}")
 
       // Emit event to React Native
       val params = Arguments.createMap().apply {
@@ -50,6 +78,9 @@ class MainActivity : ReactActivity() {
         putString("callType", callType)
         putBoolean("isGroupCall", isGroupCall)
         putString("action", callAction)
+        if (payload != null) {
+          putString("payload", payload)
+        }
       }
       CallNotificationModule.emitEvent("onCallAction", params)
 
@@ -60,6 +91,7 @@ class MainActivity : ReactActivity() {
       intent.removeExtra("callerName")
       intent.removeExtra("callType")
       intent.removeExtra("isGroupCall")
+      intent.removeExtra("payload")
     }
   }
 }

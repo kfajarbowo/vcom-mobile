@@ -31,10 +31,34 @@ export function CallManager() {
 
             if (callStore.isGroupCall) {
               const participants = callStore.getAllParticipants();
-              const participantIds = participants.map(p => p.userId);
+              const participantIds = participants.map((p: any) => p.userId);
               await webrtcService.startGroupCall(participantIds);
-            } else if (callStore.offer) {
-              await webrtcService.answerCall(callStore.callType, callStore.offer);
+            } else {
+              // Try to get offer from event payload (if passed from native) or store
+              let offer = callStore.offer;
+
+              if (!offer && event.payload) {
+                try {
+                  const payloadObj = JSON.parse(event.payload);
+                  if (payloadObj.offer) {
+                    console.log('[CallManager] Retrieved offer from event payload');
+                    offer = payloadObj.offer;
+                    // Update store with this offer so it's available
+                    callStore.setOffer(offer);
+                  }
+                } catch (e) {
+                  console.error('[CallManager] Failed to parse payload from event', e);
+                }
+              }
+
+              if (offer) {
+                await webrtcService.answerCall(callStore.callType, offer);
+              } else {
+                console.error('[CallManager] Cannot answer call - no offer available');
+                // Optionally show error to user
+                toast.show('Call failed: No connection offer', 'error');
+                callStore.endCall();
+              }
             }
           }
         } else if (event.action === 'reject') {
@@ -110,7 +134,7 @@ export function CallManager() {
                 callerUserId: fromUserId,
                 callerName: fromUserName || `User ${fromUserId}`,
                 conversationId,
-                offer: pendingOffer || null,
+                offer: pendingOffer || (payload as any).offer || null,
               });
 
               if (pendingOffer) {
@@ -281,14 +305,22 @@ export function CallManager() {
           case 'end_call':
           case 'call_ended': {
             console.log('[CallManager] Call ended by remote peer');
-            webrtcService.endCall();
+            if (callStore.isGroupCall) {
+              webrtcService.endGroupCall();
+            } else {
+              webrtcService.endCall();
+            }
             break;
           }
 
           case 'call_rejected': {
             console.log('[CallManager] Call rejected by remote peer');
             toast.show('Call was declined', 'info');
-            webrtcService.endCall();
+            if (callStore.isGroupCall) {
+              webrtcService.endGroupCall();
+            } else {
+              webrtcService.endCall();
+            }
             break;
           }
 
@@ -302,13 +334,17 @@ export function CallManager() {
             } else {
               toast.show(errorMessage || 'Call failed', 'error');
             }
-            webrtcService.endCall();
+            if (callStore.isGroupCall) {
+              webrtcService.endGroupCall();
+            } else {
+              webrtcService.endCall();
+            }
             break;
           }
 
           // Group call handlers
           case 'initiate_call': {
-            // This handles both 1-on-1 and group call invitations
+            // Only handle group call invitations here; 1:1 calls are handled by incoming_call
             const payload = message.payload || message;
             const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, groupName, participants } = payload as any;
 
@@ -329,7 +365,7 @@ export function CallManager() {
               break;
             }
 
-            // If it's a group call invitation
+            // Only handle group call invitations; 1:1 calls use incoming_call
             if (isGroupCall && participants) {
               console.log('[CallManager] Received group call invitation');
 
@@ -341,39 +377,12 @@ export function CallManager() {
                 groupName: groupName || 'Group Call',
                 participants: participants.map((p: any) => ({
                   userId: p.userId || p,
-                  userName: p.userName || p.callsign || `User ${p.userId || p}`
+                  userName: p.callsign || p.userName || `User ${p.userId || p}`
                 }))
               });
             } else {
-              // It's a 1-on-1 call
-              console.log('[CallManager] Received 1-on-1 call initiation');
-
-              // Only handle if not already in a call
-              if (callStore.status === 'idle') {
-                console.log('[CallManager] Setting up incoming 1-on-1 call, waiting for webrtc_offer with SDP');
-                // Set up the call with caller information
-                // The offer will be added when webrtc_offer message arrives
-                callStore.receiveCall({
-                  callId,
-                  callType: callType || 'audio',
-                  callerUserId: fromUserId,
-                  callerName: fromUserName || `User ${fromUserId}`,
-                  conversationId,
-                  offer: null, // Will be set when webrtc_offer arrives
-                });
-                console.log('[CallManager] ✅ Call metadata from initiate_call stored, waiting for offer');
-              } else {
-                console.log('[CallManager] ⚠️ Already in a call, ignoring initiate_call');
-                // Send busy signal
-                websocketService.send({
-                  type: 'reject_call',
-                  payload: {
-                    callId,
-                    toUserId: fromUserId,
-                    reason: 'busy'
-                  }
-                });
-              }
+              // Ignore 1:1 initiate_call - handled by incoming_call to avoid duplicates
+              console.log('[CallManager] Ignoring 1:1 initiate_call (handled by incoming_call)');
             }
             break;
           }
@@ -427,16 +436,36 @@ export function CallManager() {
               }
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
-              // Send rejection signal for group call
-              websocketService.send({
-                type: 'reject_group_call',
-                payload: {
-                  callId,
-                  groupId,
-                  fromUserId: currentUser?.id,
-                  userName: currentUser?.callsign || currentUser?.full_name
-                }
-              });
+              if (callStore.isGroupCall) {
+                // If we are already in a group call, and another group call comes in,
+                // we should try to join the new one if it's the same group, or reject if different.
+                // For now, let's assume we want to join if possible, or reject.
+                // This logic might need refinement based on specific requirements.
+                console.log('[CallManager] Already in a group call, attempting to join new group call if applicable.');
+                // This part is speculative, assuming a scenario where joining is desired.
+                // If the intent is to always reject, the original logic is fine.
+                // For now, let's just reject to avoid complex state management.
+                websocketService.send({
+                  type: 'reject_group_call',
+                  payload: {
+                    callId,
+                    groupId,
+                    fromUserId: currentUser?.id,
+                    userName: currentUser?.callsign || currentUser?.fullName
+                  }
+                });
+              } else {
+                // If already in a 1-on-1 call, reject the incoming group call
+                websocketService.send({
+                  type: 'reject_group_call',
+                  payload: {
+                    callId,
+                    groupId,
+                    fromUserId: currentUser?.id,
+                    userName: currentUser?.callsign || currentUser?.fullName
+                  }
+                });
+              }
             }
             break;
           }
@@ -452,7 +481,7 @@ export function CallManager() {
                 if (participant.userId !== currentUser?.id) {
                   callStore.addParticipant(
                     participant.userId,
-                    participant.userName || `User ${participant.userId}`
+                    participant.callsign || participant.userName || `User ${participant.userId}`
                   );
                 }
               });
@@ -463,20 +492,35 @@ export function CallManager() {
           case 'group_call_participants_update': {
             console.log('[CallManager] Group call participants update received');
             const payload = message.payload || message;
-            const { callId, participants, newParticipant } = payload as any;
+            const { callId, participants, participantData, newParticipant } = payload as any;
 
             console.log('[CallManager] Participants update:', {
               callId,
               participantsCount: Array.isArray(participants) ? participants.length : 0,
+              hasParticipantData: !!participantData,
               newParticipant
             });
+
+            // Build a name lookup from participantData (server-resolved names)
+            const nameMap = new Map<number, string>();
+            if (participantData && Array.isArray(participantData)) {
+              participantData.forEach((pd: any) => {
+                if (pd.userId && pd.userName) {
+                  nameMap.set(pd.userId, pd.userName);
+                }
+              });
+            }
 
             // Update participants in call store
             if (participants && Array.isArray(participants)) {
               // participants can be an array of IDs or objects with userId
               participants.forEach((participant: any) => {
                 const participantId = typeof participant === 'number' ? participant : participant.userId;
-                const participantName = typeof participant === 'object' ? participant.userName : `User ${participantId}`;
+                // Prefer server-resolved name from participantData, then from inline data
+                const participantName = nameMap.get(participantId)
+                  || (typeof participant === 'object'
+                    ? (participant.callsign || participant.userName || `User ${participantId}`)
+                    : `User ${participantId}`);
 
                 if (participantId && participantId !== currentUser?.id) {
                   // Check if participant already exists
@@ -488,6 +532,7 @@ export function CallManager() {
                 }
               });
             }
+
             break;
           }
 
@@ -579,10 +624,10 @@ export function CallManager() {
           case 'participant_joined': {
             console.log('[CallManager] New participant joined group call');
             const payload = message.payload || message;
-            const { userId, userName } = payload as any;
+            const { userId, userName, callsign } = payload as any;
 
             // Add participant to store
-            callStore.addParticipant(userId, userName || `User ${userId}`);
+            callStore.addParticipant(userId, callsign || userName || `User ${userId}`);
 
             // Create offer to new participant
             await webrtcService.createGroupOffer(userId);
@@ -597,6 +642,24 @@ export function CallManager() {
 
             // Remove participant
             webrtcService.removeGroupParticipant(userId);
+            break;
+          }
+
+          case 'force_webrtc_reconnect': {
+            // No-op: this message type is no longer sent by the backend,
+            // but handle it for backward compatibility
+            console.log('[CallManager] Received force_webrtc_reconnect (ignored - deprecated)');
+            break;
+          }
+
+          case 'call_missed': {
+            console.log('[CallManager] Call missed (timeout from server)');
+            toast.show('Call was not answered', 'info');
+            if (callStore.isGroupCall) {
+              webrtcService.endGroupCall();
+            } else {
+              webrtcService.endCall();
+            }
             break;
           }
         }

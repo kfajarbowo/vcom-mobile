@@ -16,6 +16,7 @@ export function GroupCallScreen() {
     isMuted,
     isVideoEnabled,
     isSpeakerEnabled,
+    isGroupCall,
     toggleMute,
     toggleVideo,
     toggleSpeaker,
@@ -29,7 +30,7 @@ export function GroupCallScreen() {
     return Array.from(participantsMap.values());
   }, [participantsMap]);
 
-  const isVisible = status === 'calling' || status === 'active';
+  const isVisible = (status === 'calling' || status === 'active') && isGroupCall;
 
   // Call duration timer
   useEffect(() => {
@@ -89,6 +90,7 @@ export function GroupCallScreen() {
         ]}>
         {callType === 'video' && isParticipantVideoEnabled ? (
           <RTCView
+            key={`rtcview-${participant.userId}-${participant.stream?.id || 'no-stream'}`}
             streamURL={participant.stream.toURL()}
             style={styles.participantVideo}
             objectFit="cover"
