@@ -18,10 +18,12 @@ export function ActiveCallScreen() {
     isVideoEnabled,
     isSpeakerEnabled,
     isRemoteVideoEnabled,
+    isFrontCamera,
     isGroupCall,
     toggleMute,
     toggleVideo,
     toggleSpeaker,
+    switchCamera,
   } = useCallStore();
 
   const [callDuration, setCallDuration] = useState(0);
@@ -80,7 +82,7 @@ export function ActiveCallScreen() {
       <View style={styles.container}>
         {/* Remote Video/Avatar */}
         <View style={styles.remoteVideoContainer}>
-          {callType === 'video' && remoteStream && isRemoteVideoEnabled ? (
+          {remoteStream && isRemoteVideoEnabled ? (
             <RTCView
               streamURL={remoteStream.toURL()}
               style={styles.remoteVideo}
@@ -115,46 +117,85 @@ export function ActiveCallScreen() {
           </View>
         </View>
 
-        {/* Local Video (for video calls) */}
-        {callType === 'video' && (
-          <View style={styles.localVideoContainer} pointerEvents="box-none">
-            {localStream ? (
-              <RTCView
-                key={`local-${localStream.id}`}
-                streamURL={localStream.toURL()}
-                style={styles.localVideo}
-                objectFit="cover"
-                mirror={true}
-                zOrder={1}
+        {/* Local Video PiP — always shown, camera starts off */}
+        <View style={styles.localVideoContainer} pointerEvents="box-none">
+          {isVideoEnabled && localStream ? (
+            <RTCView
+              key={`local-${localStream.id}`}
+              streamURL={localStream.toURL()}
+              style={styles.localVideo}
+              objectFit="cover"
+              mirror={isFrontCamera}
+              zOrder={1}
+            />
+          ) : (
+            <View style={styles.localVideoPlaceholder}>
+              <MaterialCommunityIcons
+                name="account"
+                size={60}
+                color="#4d5d30"
               />
-            ) : (
-              <View style={styles.localVideoPlaceholder}>
-                <MaterialCommunityIcons
-                  name="account"
-                  size={60}
-                  color="#4d5d30"
-                />
-              </View>
-            )}
-          </View>
-        )}
+            </View>
+          )}
+        </View>
 
         {/* Call Controls */}
         <View style={styles.controls}>
-          <TouchableOpacity
-            style={[styles.controlButton, isMuted && styles.controlButtonActive]}
-            onPress={toggleMute}>
-            <MaterialCommunityIcons
-              name={isMuted ? 'microphone-off' : 'microphone'}
-              size={28}
-              color={isMuted ? '#ff4444' : '#a6c455'}
-            />
-            <Text style={styles.controlLabel}>
-              {isMuted ? 'UNMUTE' : 'MUTE'}
-            </Text>
-          </TouchableOpacity>
+          {/* Top row: secondary actions */}
+          <View style={styles.controlsRow}>
+            <TouchableOpacity
+              style={[styles.controlButtonSmall, isSpeakerEnabled && styles.controlButtonActive]}
+              onPress={toggleSpeaker}>
+              <MaterialCommunityIcons
+                name={isSpeakerEnabled ? 'volume-high' : 'volume-off'}
+                size={22}
+                color={isSpeakerEnabled ? '#a6c455' : '#888'}
+              />
+              <Text style={styles.controlLabel}>SPEAKER</Text>
+            </TouchableOpacity>
 
-          {callType === 'video' && (
+            <TouchableOpacity
+              style={styles.controlButtonSmall}
+              onPress={() => {
+                switchCamera();
+                webrtcService.switchCamera();
+              }}
+              disabled={!isVideoEnabled}>
+              <MaterialCommunityIcons
+                name="camera-flip"
+                size={22}
+                color={isVideoEnabled ? '#a6c455' : '#555'}
+              />
+              <Text style={styles.controlLabel}>FLIP</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Bottom row: primary actions */}
+          <View style={styles.controlsRow}>
+            <TouchableOpacity
+              style={[styles.controlButton, isMuted && styles.controlButtonActive]}
+              onPress={toggleMute}>
+              <MaterialCommunityIcons
+                name={isMuted ? 'microphone-off' : 'microphone'}
+                size={28}
+                color={isMuted ? '#ff4444' : '#a6c455'}
+              />
+              <Text style={styles.controlLabel}>
+                {isMuted ? 'UNMUTE' : 'MUTE'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.controlButton, styles.endCallButton]}
+              onPress={handleEndCall}>
+              <MaterialCommunityIcons
+                name="phone-hangup"
+                size={28}
+                color="#fff"
+              />
+              <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={[styles.controlButton, !isVideoEnabled && styles.controlButtonActive]}
               onPress={toggleVideo}>
@@ -167,29 +208,7 @@ export function ActiveCallScreen() {
                 {isVideoEnabled ? 'HIDE' : 'SHOW'}
               </Text>
             </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            style={[styles.controlButton, isSpeakerEnabled && styles.controlButtonActive]}
-            onPress={toggleSpeaker}>
-            <MaterialCommunityIcons
-              name={isSpeakerEnabled ? 'volume-high' : 'volume-off'}
-              size={28}
-              color={isSpeakerEnabled ? '#a6c455' : '#888'}
-            />
-            <Text style={styles.controlLabel}>SPEAKER</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.controlButton, styles.endCallButton]}
-            onPress={handleEndCall}>
-            <MaterialCommunityIcons
-              name="phone-hangup"
-              size={28}
-              color="#fff"
-            />
-            <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
-          </TouchableOpacity>
+          </View>
         </View>
       </View>
     </Modal>
@@ -280,20 +299,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   controls: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
     paddingHorizontal: 16,
-    paddingVertical: 32,
+    paddingTop: 12,
+    paddingBottom: 32,
     backgroundColor: '#1a1a1a',
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   controlButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: '#2a2a2a',
     borderWidth: 2,
+    borderColor: '#3a3a3a',
+  },
+  controlButtonSmall: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
     borderColor: '#3a3a3a',
   },
   controlButtonActive: {
@@ -303,12 +337,15 @@ const styles = StyleSheet.create({
   endCallButton: {
     backgroundColor: '#ff4444',
     borderColor: '#ff6666',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
   },
   controlLabel: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: 'bold',
     color: '#888',
-    marginTop: 4,
+    marginTop: 3,
     letterSpacing: 0.5,
   },
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -53,6 +53,7 @@ export function ChatRoom({
 }: ChatRoomProps) {
   const { user } = useAuthStore();
   const setMessages = useChatStore((state) => state.setMessages);
+  const addMessage = useChatStore((state) => state.addMessage);
 
   // Subscribe to call state to check for active group calls
   const callState = useCallStore((state) => ({
@@ -61,15 +62,8 @@ export function ChatRoom({
     conversationId: state.conversationId,
   }));
 
-  // Debug: Log call state to see if rejoin button should show
-  console.log('[ChatRoom] Call State Check:', {
-    isGroup,
-    conversationId,
-    callStatus: callState.status,
-    callIsGroupCall: callState.isGroupCall,
-    callConversationId: callState.conversationId,
-    shouldShowRejoin: isGroup && callState.status === 'active' && callState.isGroupCall && callState.conversationId === conversationId
-  });
+  // Server-side active group call state for rejoin feature
+  const [activeGroupCall, setActiveGroupCall] = useState<{ callId: string, participants: number[] } | null>(null);
 
   const [messageText, setMessageText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -106,15 +100,19 @@ export function ChatRoom({
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [failedAttachment, setFailedAttachment] = useState<any>(null);
+  const [sendingAttachmentType, setSendingAttachmentType] = useState<string | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<number | null>(null);
   const [audioProgress, setAudioProgress] = useState<string>('00:00');
   const [audioDuration, setAudioDuration] = useState<string>('00:00');
   const [audioProgressPercent, setAudioProgressPercent] = useState(0);
   const audioPlayerRef = useRef(new AudioRecorderPlayer());
+  const baseUrlRef = useRef('');
+  const sessionTokenRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
   const isJumpingToMessage = useRef(false);
+  const isNearBottom = useRef(true); // Track if user is scrolled near bottom
   const messageRefsMap = useRef<Map<number, View>>(new Map()); // messageId -> View ref
 
   // Subscribe to messages for current conversation - this will trigger re-render when messages change!
@@ -134,11 +132,49 @@ export function ChatRoom({
     getApiBaseUrl().then((url) => {
       console.log('[ChatRoom] Base URL loaded:', url);
       setBaseUrl(url);
+      baseUrlRef.current = url;
     });
     getSessionToken().then((token) => {
       setSessionToken(token);
+      sessionTokenRef.current = token;
     });
   }, []);
+
+  // Query server for active group call on this conversation (rejoin feature)
+  // Re-checks when callState.status changes (e.g. user leaves call → status goes to 'idle')
+  useEffect(() => {
+    if (!isGroup) return;
+
+    const checkActiveCall = async () => {
+      try {
+        const result = await apiRequest<{ callId: string, participants: number[] } | null>(
+          `/api/conversations/${conversationId}/active-call`
+        );
+        setActiveGroupCall(result || null);
+      } catch (e) {
+        console.warn('[ChatRoom] Error checking active call:', e);
+      }
+    };
+
+    checkActiveCall();
+
+    // Listen for group call events to update the active call state
+    const removeHandler = websocketService.addMessageHandler((message) => {
+      if (
+        message.type === 'group_call_participants_update' ||
+        message.type === 'group_call_ended' ||
+        message.type === 'group_call_initiated' ||
+        message.type === 'group_call_user_left' ||
+        message.type === 'incoming_group_call' ||
+        message.type === 'participant_left' ||
+        message.type === 'participant_joined'
+      ) {
+        checkActiveCall();
+      }
+    });
+
+    return removeHandler;
+  }, [isGroup, conversationId, callState.status]);
 
   // Handle hardware back button on Android
   useEffect(() => {
@@ -182,7 +218,6 @@ export function ChatRoom({
     const unsubscribe = websocketService.addMessageHandler((message) => {
       // Convert to numbers for consistent comparison
       if (message.type === 'user_status' && Number(message.payload.userId) === Number(targetUserId)) {
-        console.log('[ChatRoom] User status update received:', message.payload);
         setOtherUserOnline(message.payload.status === 'online');
       }
     });
@@ -287,28 +322,20 @@ export function ChatRoom({
     };
   }, []);
 
-  // Scroll to unread messages or bottom on initial load
+  // Scroll to bottom on initial load — use InteractionManager for reliable timing
   useEffect(() => {
     if (!isLoading && messages.length > 0 && !hasScrolledToInitialPosition.current) {
-      // Find first unread message that's not sent by current user
-      const firstUnreadIndex = messages.findIndex(
-        (msg) => !msg.isRead && Number(msg.senderId) !== Number(user?.id)
-      );
-
-      setTimeout(() => {
-        if (firstUnreadIndex !== -1) {
-          console.log('[ChatRoom] Scrolling to first unread message at index:', firstUnreadIndex);
-          // Note: Since we're using grouped messages in FlatList, we scroll to end for now
-          // A more sophisticated implementation would calculate the group index
+      // Use InteractionManager to wait for layout, then scroll
+      const task = InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          console.log('[ChatRoom] Scrolling to bottom on initial load');
           flatListRef.current?.scrollToEnd({ animated: false });
-        } else {
-          console.log('[ChatRoom] No unread messages, scrolling to bottom');
-          flatListRef.current?.scrollToEnd({ animated: false });
-        }
-        hasScrolledToInitialPosition.current = true;
-      }, 100);
+          hasScrolledToInitialPosition.current = true;
+        }, 150);
+      });
+      return () => task.cancel();
     }
-  }, [isLoading, messages.length, user?.id]);
+  }, [isLoading, messages.length]);
 
   // Load conversation members (for determining call recipient and sender names)
   useEffect(() => {
@@ -369,20 +396,35 @@ export function ChatRoom({
         // Convert to numbers for consistent comparison (WebSocket may send strings)
         const payloadConvId = Number(message.payload?.conversationId);
         const currentConvId = Number(conversationId);
-
-        console.log('[ChatRoom] WebSocket message received:', {
-          type: message.type,
-          payloadConversationId: payloadConvId,
-          currentConversationId: currentConvId,
-          matches: payloadConvId === currentConvId,
-        });
+        const payloadSenderId = Number(message.payload?.senderId);
+        const currentUserId = Number(user?.id);
 
         if (payloadConvId === currentConvId) {
-          console.log('[ChatRoom] ✅ Message matches current conversation, reloading...');
-          // Reload messages without showing loading indicator
+          // Skip reload for own messages - the send handler already refreshes
+          if (payloadSenderId === currentUserId) {
+            console.log('[ChatRoom] ⏭️ Skipping reload for own sent message');
+            return;
+          }
+          console.log('[ChatRoom] ✅ Message from other user, reloading...');
+          loadMessages(false).then(() => {
+            // Only scroll to bottom if user was already near the bottom
+            if (isNearBottom.current) {
+              setTimeout(() => {
+                flatListRef.current?.scrollToEnd({ animated: false });
+              }, 100);
+            }
+          });
+        }
+      }
+
+      // Handle real-time message deletion (delete for everyone)
+      if (message.type === 'message_deleted') {
+        const payloadConvId = Number(message.payload?.conversationId);
+        const currentConvId = Number(conversationId);
+
+        if (payloadConvId === currentConvId) {
+          console.log('[ChatRoom] ✅ Message deleted by other user, reloading...');
           loadMessages(false);
-        } else {
-          console.log('[ChatRoom] ⚠️ Message for different conversation');
         }
       }
     });
@@ -392,7 +434,7 @@ export function ChatRoom({
       removeHandler();
       useChatStore.getState().setCurrentConversationId(null);
     };
-  }, [conversationId, conversationMembers]);
+  }, [conversationId, conversationMembers, user?.id]);
 
   const loadMessages = async (showLoading: boolean = false, loadMore: boolean = false) => {
     try {
@@ -413,46 +455,8 @@ export function ChatRoom({
         useChatStore.getState().setPaginationInfo(conversationId, { isLoading: true });
       }
 
-      const limit = 15;
+      const limit = 10;
       let offset = loadMore ? (paginationInfo?.offset || 0) : 0;
-
-      // For initial load, check if there are unread messages
-      // If yes, we need to load from the last 15 read messages
-      if (!loadMore && offset === 0) {
-        console.log('[ChatRoom] Initial load - checking for unread messages...');
-
-        // First, get total count and check for unread messages
-        // We need to call without pagination to get all messages for checking
-        const checkResponse = await apiRequest(
-          `/api/conversations/${conversationId}/messages`
-        );
-
-        if (checkResponse) {
-          const allMessages = checkResponse?.messages || checkResponse || [];
-          const total = checkResponse?.total || allMessages.length || 0;
-
-          // Find first unread message that's not sent by current user
-          const firstUnreadIndex = allMessages.findIndex(
-            (msg: any) => !msg.isRead && Number(msg.senderId) !== Number(user?.id)
-          );
-
-          console.log('[ChatRoom] Total messages:', total, 'First unread index:', firstUnreadIndex);
-
-          if (firstUnreadIndex !== -1 && firstUnreadIndex >= limit) {
-            // There are unread messages beyond the first 15
-            // Calculate offset to load the last 15 read messages
-            // If there are 50 messages total and first unread is at index 40,
-            // we want to load messages from index 25-39 (15 read messages before the unread)
-            const readMessagesCount = firstUnreadIndex;
-            offset = Math.max(0, total - readMessagesCount - limit);
-
-            console.log('[ChatRoom] Unread messages detected. Loading from offset:', offset);
-            console.log('[ChatRoom] This will show last 15 read messages');
-          } else {
-            console.log('[ChatRoom] No unread messages or fewer than 15 read messages. Will load last 15.');
-          }
-        }
-      }
 
       console.log('[ChatRoom] Loading messages for conversation:', conversationId, 'limit:', limit, 'offset:', offset, 'loadMore:', loadMore);
 
@@ -517,6 +521,7 @@ export function ChatRoom({
           attachmentUrl: msg.attachmentUrl,
           attachmentName: msg.attachmentName,
           attachmentSize: msg.attachmentSize,
+          attachmentThumbnailUrl: msg.attachmentThumbnailUrl,
           replyToId: msg.replyToId ? Number(msg.replyToId) : undefined,
           forwardedFromId: msg.forwardedFromId ? Number(msg.forwardedFromId) : undefined,
           isDeleted: msg.isDeleted,
@@ -552,10 +557,10 @@ export function ChatRoom({
         });
         console.log('[ChatRoom] Reset unread count to 0 for conversation:', conversationId);
 
-        // Scroll to end after initial load
+        // Scroll to end after load — no animation to avoid Android touch responder lock
         setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: !showLoading });
-        }, showLoading ? 300 : 100);
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }, 200);
       }
     } catch (error) {
       console.error('[ChatRoom] Error loading messages:', error);
@@ -780,54 +785,59 @@ export function ChatRoom({
     const uploadUrl = `${await getApiBaseUrl()}/api/attachments/upload`;
     const sessionToken = await getSessionToken();
 
-    return new Promise((resolve, reject) => {
-      const formData = new FormData();
-      formData.append('file', {
-        uri: file.uri,
-        type: file.type || 'application/octet-stream',
-        name: file.fileName || 'attachment',
-      } as any);
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', uploadUrl);
-
-      if (sessionToken) {
-        xhr.setRequestHeader('X-Session-Token', sessionToken);
+    try {
+      // Normalize file URI for RNFetchBlob
+      let fileUri = file.uri;
+      if (Platform.OS === 'android' && fileUri.startsWith('file://')) {
+        fileUri = fileUri.replace('file://', '');
       }
 
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const pct = Math.round((event.loaded / event.total) * 100);
+      console.log('[ChatRoom] Uploading via RNFetchBlob:', uploadUrl);
+
+      const res = await RNFetchBlob.fetch(
+        'POST',
+        uploadUrl,
+        {
+          'X-Session-Token': sessionToken || '',
+          'Content-Type': 'multipart/form-data',
+        },
+        [
+          {
+            name: 'file',
+            filename: file.fileName || 'attachment',
+            type: file.type || 'application/octet-stream',
+            data: RNFetchBlob.wrap(fileUri),
+          },
+        ],
+      ).uploadProgress({ interval: 100 }, (written, total) => {
+        if (total > 0) {
+          const pct = Math.round((written / total) * 100);
           setUploadProgress(pct);
         }
-      };
+      });
 
-      xhr.onload = () => {
-        setUploadProgress(null);
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch {
-            reject(new Error('Invalid upload response'));
-          }
-        } else {
-          // Surface multer file size error as user-friendly message
-          let errorMsg = `Upload failed (${xhr.status})`;
-          try {
-            const body = JSON.parse(xhr.responseText);
-            if (body.message) errorMsg = body.message;
-          } catch { }
-          reject(new Error(errorMsg));
+      setUploadProgress(null);
+
+      const status = res.info().status;
+      if (status >= 200 && status < 300) {
+        try {
+          return JSON.parse(res.data);
+        } catch {
+          throw new Error('Invalid upload response');
         }
-      };
-
-      xhr.onerror = () => {
-        setUploadProgress(null);
-        reject(new Error('Network error during upload'));
-      };
-
-      xhr.send(formData);
-    });
+      } else {
+        let errorMsg = `Upload failed (${status})`;
+        try {
+          const body = JSON.parse(res.data);
+          if (body.message) errorMsg = body.message;
+        } catch { }
+        throw new Error(errorMsg);
+      }
+    } catch (err: any) {
+      setUploadProgress(null);
+      console.error('[ChatRoom] Upload error details:', err.message, err);
+      throw err;
+    }
   };
 
   const sendMessage = async () => {
@@ -845,6 +855,7 @@ export function ChatRoom({
       // Upload attachment if selected
       if (selectedAttachment) {
         console.log('[ChatRoom] Uploading attachment...');
+        setSendingAttachmentType(selectedAttachment.type?.split('/')[0] || 'file');
         const uploadResponse = await uploadAttachment(selectedAttachment);
         console.log('[ChatRoom] Upload response:', uploadResponse);
 
@@ -869,6 +880,9 @@ export function ChatRoom({
         messagePayload.attachmentUrl = attachmentData.url;
         messagePayload.attachmentName = attachmentData.name;
         messagePayload.attachmentSize = attachmentData.size;
+        if (attachmentData.thumbnailUrl) {
+          messagePayload.attachmentThumbnailUrl = attachmentData.thumbnailUrl;
+        }
       }
 
       if (replyToMessage) {
@@ -883,15 +897,38 @@ export function ChatRoom({
 
       console.log('[ChatRoom] Message sent successfully:', response);
 
+      // For text-only messages, add immediately for instant feedback
+      // For attachment messages, skip addMessage and let loadMessages bring them
+      // from the server - this prevents stale FlatList closure issues
+      if (response?.id && !attachmentData) {
+        const senderName = user?.callsign || user?.fullName || 'Me';
+        const sentMessage: Message = {
+          id: Number(response.id),
+          senderId: Number(user?.id),
+          senderName,
+          content: response.content || content,
+          timestamp: response.createdAt || new Date().toISOString(),
+          isRead: true,
+          classification: response.classification || 'UNCLASSIFIED',
+          hasAttachment: false,
+          replyToId: replyToMessage?.id,
+        };
+        addMessage(conversationId, sentMessage);
+      }
+
       // Clear attachment and reply
       setSelectedAttachment(null);
       setReplyToMessage(null);
 
-      // Wait a moment before reloading to ensure server has fully processed the message
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      // Reload messages to show the new message (without showing loading spinner)
+      // Sync with server to get the full message list
+      // For attachment messages this is the only way they appear in the list
+      await new Promise(resolve => setTimeout(resolve, attachmentData ? 1500 : 500));
       await loadMessages(false);
+
+      // Scroll to bottom after server sync — no animation to avoid locking touch responder
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
 
     } catch (error: any) {
       console.error('[ChatRoom] Error sending message:', error);
@@ -925,12 +962,14 @@ export function ChatRoom({
       }
     } finally {
       setIsSending(false);
+      setSendingAttachmentType(null);
     }
   };
 
   const handleSendVoiceNote = async (fileUri: string, duration: number) => {
     setIsRecordingVoice(false);
     setIsSending(true);
+    setSendingAttachmentType('audio');
     try {
       const file = {
         uri: fileUri,
@@ -952,18 +991,27 @@ export function ChatRoom({
         attachmentName: attachmentData.name,
         attachmentSize: attachmentData.size,
       };
-      await apiRequest('/api/messages', {
+      const response = await apiRequest('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messagePayload),
       });
-      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Don't add attachment messages locally - let loadMessages bring them
+      // from the server to avoid stale FlatList closure issues
+      await new Promise(resolve => setTimeout(resolve, 1500));
       await loadMessages(false);
+
+      // Scroll to bottom after server sync — no animation to avoid locking touch responder
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
     } catch (error: any) {
       console.error('[ChatRoom] Error sending voice note:', error);
       Alert.alert('Error', 'Failed to send voice note. Please try again.');
     } finally {
       setIsSending(false);
+      setSendingAttachmentType(null);
     }
   };
 
@@ -1414,24 +1462,20 @@ export function ChatRoom({
       ? messages.find(m => m.id === item.replyToId)
       : null;
 
-    // Get full attachment URL
+    // Get full attachment URL - use ref as fallback to prevent stale closure issues
     const getFullAttachmentUrl = (url: string | undefined) => {
       if (!url) {
-        console.log('[ChatRoom] getFullAttachmentUrl - missing url');
         return '';
       }
-      if (!baseUrl) {
-        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet, returning relative url:', url);
-        // If baseUrl isn't loaded yet, return empty and wait for re-render
+      const currentBaseUrl = baseUrl || baseUrlRef.current;
+      if (!currentBaseUrl) {
+        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet');
         return '';
       }
       if (url.startsWith('http://') || url.startsWith('https://')) {
-        console.log('[ChatRoom] getFullAttachmentUrl - already full URL:', url);
         return url;
       }
-      // Use the baseUrl from state
-      const fullUrl = `${baseUrl}${url.startsWith('/') ? url : '/' + url}`;
-      console.log('[ChatRoom] getFullAttachmentUrl - constructed:', { url, baseUrl, fullUrl });
+      const fullUrl = `${currentBaseUrl}${url.startsWith('/') ? url : '/' + url}`;
       return fullUrl;
     };
 
@@ -1439,9 +1483,10 @@ export function ChatRoom({
     const getAuthImageSource = (url: string | undefined) => {
       const fullUrl = getFullAttachmentUrl(url);
       if (!fullUrl) return { uri: '' };
+      const token = sessionToken || sessionTokenRef.current;
       return {
         uri: fullUrl,
-        headers: sessionToken ? { 'X-Session-Token': sessionToken } : undefined,
+        headers: token ? { 'X-Session-Token': token } : undefined,
       };
     };
 
@@ -1648,25 +1693,25 @@ export function ChatRoom({
     </View>
   );
 
-  const groupMessagesByDate = (messages: Message[]) => {
-    const grouped: { date: string; messages: Message[] }[] = [];
+  // Flatten messages with date separators as individual items for FlatList
+  // This prevents the inner .map() re-render problem that breaks Android touch handlers
+  type FlatItem = { type: 'date'; date: string; key: string } | { type: 'message'; message: Message; key: string };
+
+  const flatItems: FlatItem[] = useMemo(() => {
+    const items: FlatItem[] = [];
     let currentDate = '';
 
     messages.forEach((message) => {
       const messageDate = new Date(message.timestamp).toDateString();
-
       if (messageDate !== currentDate) {
-        grouped.push({ date: messageDate, messages: [message] });
+        items.push({ type: 'date', date: messageDate, key: `date-${messageDate}` });
         currentDate = messageDate;
-      } else {
-        grouped[grouped.length - 1].messages.push(message);
       }
+      items.push({ type: 'message', message, key: `msg-${message.id}` });
     });
 
-    return grouped;
-  };
-
-  const groupedMessages = groupMessagesByDate(messages);
+    return items;
+  }, [messages]);
 
   // Show replied message in a popup instead of scrolling (more reliable)
   const handleViewRepliedMessage = useCallback((repliedMessage: Message) => {
@@ -1774,11 +1819,8 @@ export function ChatRoom({
         </TouchableOpacity>
 
         <View style={styles.headerActions}>
-          {/* Show Rejoin button if there's an active group call for this conversation */}
-          {isGroup &&
-            callState.status === 'active' &&
-            callState.isGroupCall &&
-            callState.conversationId === conversationId ? (
+          {/* Show Rejoin button if server reports an active group call AND user is NOT already in it */}
+          {isGroup && activeGroupCall && callState.conversationId !== conversationId ? (
             <TouchableOpacity
               style={styles.rejoinButton}
               onPress={() => handleStartCall('video')}>
@@ -1787,13 +1829,23 @@ export function ChatRoom({
                 size={18}
                 color="#ffffff"
               />
-              <Text style={styles.rejoinButtonText}>Rejoin</Text>
+              <Text style={styles.rejoinButtonText}>
+                Rejoin ({activeGroupCall.participants.length})
+              </Text>
             </TouchableOpacity>
           ) : (
             <>
               <TouchableOpacity
                 style={styles.callButton}
-                onPress={() => handleStartCall('video')}>
+                onPress={async () => {
+                  await handleStartCall('video');
+                  // Video button: enable camera after call setup completes
+                  const store = useCallStore.getState();
+                  if (store.localStream) {
+                    store.localStream.getVideoTracks().forEach((t: any) => { t.enabled = true; });
+                    useCallStore.setState({ isVideoEnabled: true });
+                  }
+                }}>
                 <MaterialCommunityIcons
                   name="video"
                   size={18}
@@ -1823,6 +1875,16 @@ export function ChatRoom({
         </View>
       </View>
 
+      {/* Call in Progress Banner */}
+      {isGroup && activeGroupCall && callState.conversationId !== conversationId && (
+        <View style={styles.callInProgressBanner}>
+          <MaterialCommunityIcons name="phone-in-talk" size={16} color="#a6c455" />
+          <Text style={styles.callInProgressText}>
+            CALL IN PROGRESS ({activeGroupCall.participants.length} ACTIVE)
+          </Text>
+        </View>
+      )}
+
       {/* Messages */}
       {isLoading ? (
         <View style={styles.centerContainer}>
@@ -1832,37 +1894,41 @@ export function ChatRoom({
       ) : (
         <FlatList
           ref={flatListRef}
-          data={groupedMessages}
-          extraData={`${messages.length}-${baseUrl}-${highlightedMessageId}`}
-          removeClippedSubviews={true}
+          data={flatItems}
+          extraData={`${messages.length}-${baseUrl}-${sessionToken}-${highlightedMessageId}-${playingAudioId}`}
+          removeClippedSubviews={false}
           keyboardShouldPersistTaps="handled"
           windowSize={10}
           maxToRenderPerBatch={10}
-          initialNumToRender={15}
-          renderItem={({ item: group }) => (
-            <View>
-              {renderDateSeparator(group.date)}
-              {group.messages.map((message: Message, index: number) => (
-                <React.Fragment key={`${message.id}-${index}`}>
-                  {renderMessage({ item: message })}
-                </React.Fragment>
-              ))}
-            </View>
-          )}
-          keyExtractor={(item) => item.date}
+          initialNumToRender={10}
+          renderItem={({ item }) => {
+            if (item.type === 'date') {
+              return renderDateSeparator(item.date);
+            }
+            return renderMessage({ item: item.message });
+          }}
+          keyExtractor={(item) => item.key}
           contentContainerStyle={styles.messagesContent}
           ListHeaderComponent={renderLoadingIndicator}
-          onContentSizeChange={() => {
-            // Only auto-scroll to end if we've already done initial positioning
-            // AND we're not currently jumping to a specific message
-            // This prevents scrolling during initial load and interfering with jump-to-message
-            if (hasScrolledToInitialPosition.current && !isJumpingToMessage.current) {
-              flatListRef.current?.scrollToEnd({ animated: true });
-            }
-          }}
+          ListFooterComponent={sendingAttachmentType ? (
+            <View style={styles.sendingAttachmentIndicator}>
+              <View style={styles.sendingAttachmentBubble}>
+                <ActivityIndicator size="small" color="#a6c455" />
+                <Text style={styles.sendingAttachmentText}>
+                  {uploadProgress !== null
+                    ? `UPLOADING ${sendingAttachmentType.toUpperCase()}... ${uploadProgress}%`
+                    : `PROCESSING ${sendingAttachmentType.toUpperCase()}...`}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           onScroll={(event) => {
             const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-            // Check if user scrolled to top (within 100px threshold)
+            // Track whether user is near the bottom (within 150px)
+            const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+            isNearBottom.current = distanceFromBottom < 150;
+
+            // Check if user scrolled to top (within 100px threshold) for pagination
             if (contentOffset.y < 100) {
               const paginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
               if (paginationInfo?.hasMore && !paginationInfo?.isLoading) {
@@ -2420,6 +2486,14 @@ export function ChatRoom({
                       </Text>
 
                       <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="badge-account" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>NRP</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.nrp || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
                         <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
                         <Text style={styles.infoLabel}>RANK</Text>
                       </View>
@@ -2541,6 +2615,14 @@ export function ChatRoom({
                         </View>
                         <Text style={styles.infoValue}>
                           {otherUser.fullName || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="badge-account" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>NRP</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.nrp || 'Not set'}
                         </Text>
 
                         <View style={styles.infoItem}>
@@ -2859,6 +2941,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  callInProgressBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a3a1a',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#4d5d30',
+  },
+  callInProgressText: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
   messagesContent: {
     padding: 16,
     paddingBottom: 8,
@@ -3138,6 +3237,29 @@ const styles = StyleSheet.create({
   attachmentContainer: {
     marginBottom: 8,
   },
+  sendingAttachmentIndicator: {
+    alignItems: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  sendingAttachmentBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2a3a1a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    borderStyle: 'dashed',
+  },
+  sendingAttachmentText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1,
+  },
   imageClickable: {
     borderRadius: 4,
   },
@@ -3194,6 +3316,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#4d5d30',
     padding: 12,
+    gap: 8,
+    width: '100%',
   },
   fileIcon: {
     fontSize: 24,
@@ -3204,6 +3328,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     flex: 1,
+    flexShrink: 1,
   },
   audioAttachment: {
     flexDirection: 'row',

@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,14 +6,15 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  Dimensions,
   ActivityIndicator,
   Platform,
+  NativeModules,
 } from 'react-native';
-import {WebView} from 'react-native-webview';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import RNFetchBlob from 'rn-fetch-blob';
-import {getSessionToken} from '../services/apiClient';
+import { getSessionToken } from '../services/apiClient';
+
+const { FileOpener } = NativeModules;
 
 interface VideoPlayerModalProps {
   visible: boolean;
@@ -21,8 +22,6 @@ interface VideoPlayerModalProps {
   videoName?: string;
   onClose: () => void;
 }
-
-const {width: screenWidth, height: screenHeight} = Dimensions.get('window');
 
 export function VideoPlayerModal({
   visible,
@@ -32,17 +31,15 @@ export function VideoPlayerModal({
 }: VideoPlayerModalProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [localFilePath, setLocalFilePath] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const tempFileRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (visible && videoUrl) {
-      downloadVideo();
+      downloadAndPlayVideo();
     }
 
     return () => {
-      // Clean up temp file on unmount or when modal closes
       cleanupTempFile();
     };
   }, [visible, videoUrl]);
@@ -51,17 +48,16 @@ export function VideoPlayerModal({
     if (tempFileRef.current) {
       RNFetchBlob.fs
         .unlink(tempFileRef.current)
-        .catch(() => {}); // Ignore cleanup errors
+        .catch(() => { }); // Ignore cleanup errors
       tempFileRef.current = null;
     }
   };
 
-  const downloadVideo = async () => {
+  const downloadAndPlayVideo = async () => {
     try {
       setLoading(true);
       setError(null);
       setDownloadProgress(0);
-      setLocalFilePath(null);
 
       const sessionToken = await getSessionToken();
       if (!sessionToken) {
@@ -93,15 +89,10 @@ export function VideoPlayerModal({
       console.log('[VideoPlayerModal] Video downloaded to:', filePath);
 
       tempFileRef.current = filePath;
-
-      // Convert to file URI for WebView
-      const fileUri =
-        Platform.OS === 'android'
-          ? `file://${filePath}`
-          : filePath;
-
-      setLocalFilePath(fileUri);
       setLoading(false);
+
+      // Open with native system video player
+      await openWithNativePlayer(filePath);
     } catch (err: any) {
       console.error('[VideoPlayerModal] Download error:', err);
       setError(`Failed to download video: ${err.message || 'Unknown error'}`);
@@ -109,61 +100,70 @@ export function VideoPlayerModal({
     }
   };
 
+  const openWithNativePlayer = async (filePath: string) => {
+    try {
+      // Determine MIME type from extension
+      const ext = filePath.split('.').pop()?.toLowerCase() || 'mp4';
+      const mimeTypes: Record<string, string> = {
+        mp4: 'video/mp4',
+        webm: 'video/webm',
+        mpeg: 'video/mpeg',
+        ogg: 'video/ogg',
+        avi: 'video/x-msvideo',
+        mkv: 'video/x-matroska',
+        '3gp': 'video/3gpp',
+        mov: 'video/quicktime',
+      };
+      const mimeType = mimeTypes[ext] || 'video/*';
+
+      console.log('[VideoPlayerModal] Opening with native player:', filePath, mimeType);
+
+      if (Platform.OS === 'android') {
+        try {
+          // Use our custom FileOpener module with FileProvider support
+          await FileOpener.openFile(filePath, mimeType);
+          console.log('[VideoPlayerModal] FileOpener succeeded');
+        } catch (openerError: any) {
+          console.error('[VideoPlayerModal] FileOpener failed:', openerError);
+
+          // Fallback: Try RNFetchBlob's actionViewIntent
+          try {
+            await RNFetchBlob.android.actionViewIntent(filePath, mimeType);
+            console.log('[VideoPlayerModal] actionViewIntent succeeded');
+          } catch (intentError: any) {
+            console.error('[VideoPlayerModal] actionViewIntent failed:', intentError);
+            setError('No video player app found. Please install a video player.');
+          }
+        }
+      } else {
+        // iOS
+        try {
+          await RNFetchBlob.ios.openDocument(filePath);
+        } catch (iosError: any) {
+          console.error('[VideoPlayerModal] iOS openDocument failed:', iosError);
+          setError('Failed to open video player.');
+        }
+      }
+    } catch (err: any) {
+      console.error('[VideoPlayerModal] Error opening native player:', err);
+      setError('Failed to open video. Please try again.');
+    }
+  };
+
   const handleClose = () => {
     setLoading(true);
     setError(null);
-    setLocalFilePath(null);
     cleanupTempFile();
     onClose();
   };
-
-  // Create HTML that plays from local file
-  const videoHTML = localFilePath
-    ? `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-          background-color: #000000;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          height: 100vh;
-          overflow: hidden;
-        }
-        video {
-          width: 100%;
-          height: 100%;
-          max-width: 100vw;
-          max-height: 100vh;
-          object-fit: contain;
-        }
-      </style>
-    </head>
-    <body>
-      <video
-        controls
-        playsinline
-        autoplay
-        preload="auto"
-        src="${localFilePath}"
-      ></video>
-    </body>
-    </html>
-  `
-    : '';
 
   return (
     <Modal
       visible={visible}
       animationType="fade"
-      transparent={false}
+      transparent={true}
       onRequestClose={handleClose}
       statusBarTranslucent>
-      <StatusBar hidden />
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
@@ -181,8 +181,8 @@ export function VideoPlayerModal({
           </TouchableOpacity>
         </View>
 
-        {/* Video Player */}
-        <View style={styles.videoContainer}>
+        {/* Content */}
+        <View style={styles.contentContainer}>
           {error ? (
             <View style={styles.errorContainer}>
               <MaterialCommunityIcons
@@ -193,7 +193,7 @@ export function VideoPlayerModal({
               <Text style={styles.errorText}>{error}</Text>
               <TouchableOpacity
                 style={styles.retryButton}
-                onPress={downloadVideo}>
+                onPress={downloadAndPlayVideo}>
                 <Text style={styles.retryButtonText}>RETRY</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -211,26 +211,30 @@ export function VideoPlayerModal({
                   : 'PREPARING VIDEO...'}
               </Text>
             </View>
-          ) : localFilePath ? (
-            <WebView
-              source={{html: videoHTML, baseUrl: ''}}
-              style={styles.webview}
-              allowsFullscreenVideo={true}
-              allowsInlineMediaPlayback={true}
-              mediaPlaybackRequiresUserAction={false}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              allowFileAccess={true}
-              allowFileAccessFromFileURLs={true}
-              allowUniversalAccessFromFileURLs={true}
-              originWhitelist={['*']}
-              onError={(syntheticEvent) => {
-                const {nativeEvent} = syntheticEvent;
-                console.error('[VideoPlayerModal] WebView error:', nativeEvent);
-                setError('Video playback failed');
-              }}
-            />
-          ) : null}
+          ) : (
+            <View style={styles.readyContainer}>
+              <MaterialCommunityIcons
+                name="play-circle"
+                size={80}
+                color="#a6c455"
+              />
+              <Text style={styles.readyText}>VIDEO READY</Text>
+              <Text style={styles.readySubtext}>
+                Opened in your device's video player
+              </Text>
+              <TouchableOpacity
+                style={styles.playAgainButton}
+                onPress={() => tempFileRef.current && openWithNativePlayer(tempFileRef.current)}>
+                <MaterialCommunityIcons name="play" size={20} color="#ffffff" />
+                <Text style={styles.playAgainText}>PLAY AGAIN</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.closeButtonBottom}
+                onPress={handleClose}>
+                <Text style={styles.closeButtonText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </View>
     </Modal>
@@ -240,7 +244,7 @@ export function VideoPlayerModal({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
   },
   header: {
     flexDirection: 'row',
@@ -248,6 +252,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 12 : 12,
     backgroundColor: '#1a1a1a',
     borderBottomWidth: 2,
     borderBottomColor: '#4d5d30',
@@ -268,19 +273,14 @@ const styles = StyleSheet.create({
   closeButton: {
     padding: 4,
   },
-  videoContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  webview: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  loadingOverlay: {
+  contentContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000000',
+  },
+  loadingOverlay: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   loadingText: {
     color: '#a6c455',
@@ -290,7 +290,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   errorContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 32,
@@ -326,8 +325,45 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 2,
     borderColor: '#555',
+    marginTop: 8,
   },
   closeButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  readyContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  readyText: {
+    color: '#a6c455',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginTop: 16,
+  },
+  readySubtext: {
+    color: '#888',
+    fontSize: 12,
+    marginTop: 8,
+    letterSpacing: 0.5,
+  },
+  playAgainButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#4d5d30',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#5a6b38',
+    marginTop: 24,
+    gap: 8,
+  },
+  playAgainText: {
     color: '#ffffff',
     fontSize: 12,
     fontWeight: 'bold',

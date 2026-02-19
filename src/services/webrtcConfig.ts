@@ -45,7 +45,8 @@ export const ICE_SERVERS = {
 };
 
 // Media constraints for getUserMedia
-export const getMediaConstraints = (callType: CallType) => ({
+// Always request both audio and video — camera starts disabled at the track level
+export const getMediaConstraints = () => ({
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
@@ -53,17 +54,19 @@ export const getMediaConstraints = (callType: CallType) => ({
     sampleRate: { ideal: 48000 },
     channelCount: { ideal: 1 },
   },
-  video: callType === 'video' ? {
+  video: {
     width: { ideal: 640 },
     height: { ideal: 480 },
     frameRate: { ideal: 30 },
     facingMode: 'user',
-  } : false,
+  },
 });
 
 // InCallManager options
+// Always use 'audio' media type to default to earpiece (phone mode)
+// Even for video calls - the unified UI supports video but starts with earpiece
 export const getInCallManagerOptions = (callType: CallType) => ({
-  media: (callType === 'video' ? 'video' : 'audio') as 'audio' | 'video',
+  media: 'audio' as 'audio' | 'video',
   auto: true,
   ringback: '',
 });

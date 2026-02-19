@@ -10,7 +10,7 @@ import InCallManager from 'react-native-incall-manager';
 import { websocketService } from './websocket';
 import { useCallStore, CallType } from '../store/callStore';
 import { useAuthStore } from '../store/authStore';
-import { requestCameraAndMicrophonePermissions, requestMicrophonePermission } from '../utils/permissions';
+import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
 import { ICE_SERVERS, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
 
 /**
@@ -155,23 +155,21 @@ export class OneOnOneCallService {
     };
   }
 
-  // Get user media (camera/microphone)
+  // Get user media (camera/microphone) — always requests both
   async getUserMedia(callType: CallType): Promise<MediaStream> {
     console.log('[WebRTC 1:1] Getting user media:', callType);
 
     // Longer delay to ensure previous stream cleanup is complete on mobile
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // Request permissions first
-    const hasPermissions = callType === 'video'
-      ? await requestCameraAndMicrophonePermissions()
-      : await requestMicrophonePermission();
+    // Always request camera + mic permissions (unified call UI)
+    const hasPermissions = await requestCameraAndMicrophonePermissions();
 
     if (!hasPermissions) {
       throw new Error('Camera/Microphone permissions not granted');
     }
 
-    const constraints = getMediaConstraints(callType);
+    const constraints = getMediaConstraints();
 
     try {
       const stream = await mediaDevices.getUserMedia(constraints);
@@ -179,6 +177,13 @@ export class OneOnOneCallService {
       console.log('[WebRTC 1:1] Stream ID:', stream.id);
       console.log('[WebRTC 1:1] Audio tracks:', stream.getAudioTracks().length);
       console.log('[WebRTC 1:1] Video tracks:', stream.getVideoTracks().length);
+
+      // Camera state based on call type:
+      // - video calls: camera ON by default
+      // - audio calls: camera OFF by default (can be enabled via video button)
+      const shouldEnableVideo = callType === 'video';
+      stream.getVideoTracks().forEach(track => { track.enabled = shouldEnableVideo; });
+      useCallStore.setState({ isVideoEnabled: shouldEnableVideo });
 
       // Log audio track details
       stream.getAudioTracks().forEach((track, index) => {
@@ -221,12 +226,11 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session - video calls use speaker, audio calls use earpiece
+      // Start audio session — earpiece by default (camera starts off)
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      const useSpeaker = callType === 'video';
-      InCallManager.setForceSpeakerphoneOn(useSpeaker);
-      console.log(`[WebRTC 1:1] Audio session started, speaker: ${useSpeaker}`);
+      InCallManager.setForceSpeakerphoneOn(false);
+      console.log('[WebRTC 1:1] Audio session started, speaker: false');
 
       // Initialize peer connection
       await this.initializePeerConnection();
@@ -243,16 +247,16 @@ export class OneOnOneCallService {
         this.peerConnection?.addTrack(track, stream);
       });
 
-      // Then add video tracks
+      // Then add video tracks (disabled at track level, but present in SDP)
       stream.getVideoTracks().forEach((track) => {
         console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
 
-      // Create offer
+      // Create offer — always receive video for unified call UI
       const offer = await this.peerConnection!.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: callType === 'video',
+        offerToReceiveVideo: true,
       });
 
       await this.peerConnection!.setLocalDescription(offer);
@@ -332,12 +336,11 @@ export class OneOnOneCallService {
       const savedIceCandidates = [...this.pendingIceCandidates];
       console.log('[WebRTC 1:1] Saved', savedIceCandidates.length, 'ICE candidates received while ringing');
 
-      // Start audio session - video calls use speaker, audio calls use earpiece
+      // Start audio session — earpiece by default (camera starts off)
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      const useSpeaker = callType === 'video';
-      InCallManager.setForceSpeakerphoneOn(useSpeaker);
-      console.log(`[WebRTC 1:1] Audio session started, speaker: ${useSpeaker}`);
+      InCallManager.setForceSpeakerphoneOn(false);
+      console.log('[WebRTC 1:1] Audio session started, speaker: false');
 
       // Initialize peer connection (this clears pendingIceCandidates)
       await this.initializePeerConnection();

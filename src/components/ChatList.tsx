@@ -78,11 +78,11 @@ export function ChatList({onSelectChat}: ChatListProps) {
   // Handle user status updates from WebSocket
   const handleUserStatus = useCallback((message: any) => {
     if (message.type === 'user_status') {
-      // Convert userId to number for consistent Map key type
       const userId = Number(message.payload.userId);
       const status = message.payload.status;
-      console.log('[ChatList] User status update:', userId, status);
       setUserStatuses(prev => {
+        // Skip update if status hasn't changed to avoid unnecessary re-renders
+        if (prev.get(userId) === status) return prev;
         const newMap = new Map(prev);
         newMap.set(userId, status);
         return newMap;

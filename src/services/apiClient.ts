@@ -17,6 +17,8 @@ export const STORAGE_KEYS = {
   SERVER_PORT: 'vcomm_server_port',
   USER_DATA: 'vcomm_user_data',
   LICENSE_KEY: 'vcomm_license_key',
+  LICENSE_SERVER_HOST: 'vcomm_license_server_host',
+  LICENSE_SERVER_PORT: 'vcomm_license_server_port',
 } as const;
 
 /**

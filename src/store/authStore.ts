@@ -7,6 +7,9 @@ interface User {
   email?: string;
   callsign?: string;
   fullName?: string;
+  nrp?: string;
+  rank?: string;
+  branch?: string;
   role?: string;
 }
 

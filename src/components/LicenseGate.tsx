@@ -14,8 +14,15 @@ interface LicenseGateProps {
  * Shows loading screen while checking license status.
  * Shows activation screen if no valid license found.
  * Renders children (app content) if license is valid.
+ *
+ * TESTING MODE: Currently disabled - bypasses license check
  */
 export function LicenseGate({children}: LicenseGateProps) {
+  // TESTING: Skip license validation
+  // TODO: Re-enable license checking for production
+  return <>{children}</>;
+
+  /* ORIGINAL CODE - UNCOMMENT TO RE-ENABLE LICENSE CHECKING
   const {isLicenseValid, isLoading, hasCheckedLicense} = useLicenseStore();
 
   // Show loading screen while checking license
@@ -35,6 +42,7 @@ export function LicenseGate({children}: LicenseGateProps) {
 
   // Render app content if license is valid
   return <>{children}</>;
+  */
 }
 
 const styles = StyleSheet.create({

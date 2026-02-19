@@ -132,6 +132,13 @@ export function SettingsScreen() {
             </View>
             <View style={styles.infoDivider} />
             <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>NRP</Text>
+              <Text style={styles.infoValue}>
+                {user?.nrp || 'N/A'}
+              </Text>
+            </View>
+            <View style={styles.infoDivider} />
+            <View style={styles.infoRow}>
               <Text style={styles.infoLabel}>ROLE</Text>
               <Text style={styles.infoValue}>
                 {user?.role?.toUpperCase() || 'N/A'}

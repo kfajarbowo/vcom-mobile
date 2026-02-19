@@ -25,7 +25,8 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 export function LoginScreen({ navigation }: Props) {
   const [isLoading, setIsLoading] = useState(false);
   const [showServerSettings, setShowServerSettings] = useState(false);
-  const [serverHost, setServerHost] = useState('192.168.100.7');
+  const [showPassword, setShowPassword] = useState(false);
+  const [serverHost, setServerHost] = useState('192.168.204.105');
   const [serverPort, setServerPort] = useState('5000');
   const { setUser, setSessionToken } = useAuthStore();
 
@@ -304,15 +305,28 @@ export function LoginScreen({ navigation }: Props) {
               render={({ field: { onChange, onBlur, value } }) => (
                 <View style={styles.fieldContainer}>
                   <Text style={styles.label}>SECURITY CODE / PASSWORD</Text>
-                  <Input
-                    placeholder="ENTER SECURITY CODE"
-                    value={value}
-                    onChangeText={onChange}
-                    onBlur={onBlur}
-                    error={errors.password?.message}
-                    secureTextEntry
-                    autoCapitalize="none"
-                  />
+                  <View style={styles.passwordWrapper}>
+                    <Input
+                      placeholder="ENTER SECURITY CODE"
+                      value={value}
+                      onChangeText={onChange}
+                      onBlur={onBlur}
+                      error={errors.password?.message}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      style={styles.passwordInput}
+                    />
+                    <TouchableOpacity
+                      style={styles.eyeButton}
+                      onPress={() => setShowPassword(prev => !prev)}
+                      activeOpacity={0.7}>
+                      <MaterialCommunityIcons
+                        name={showPassword ? 'eye-off' : 'eye'}
+                        size={20}
+                        color="#a6c455"
+                      />
+                    </TouchableOpacity>
+                  </View>
 
                   {errors.password && (
                     <Text style={styles.errorText}>{errors.password.message}</Text>
@@ -454,6 +468,21 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     marginTop: 12,
+  },
+  passwordWrapper: {
+    position: 'relative',
+  },
+  passwordInput: {
+    paddingRight: 48,
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 36,
   },
   forgotPasswordButton: {
     alignSelf: 'flex-end',

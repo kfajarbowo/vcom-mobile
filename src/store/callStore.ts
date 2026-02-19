@@ -39,6 +39,7 @@ export interface CallState {
   isVideoEnabled: boolean;
   isSpeakerEnabled: boolean;
   isRemoteVideoEnabled: boolean;
+  isFrontCamera: boolean; // true = front camera, false = back camera
 
   // Group call support
   isGroupCall: boolean;
@@ -69,6 +70,7 @@ export interface CallState {
   toggleMute: () => void;
   toggleVideo: () => void;
   toggleSpeaker: () => void;
+  switchCamera: () => void;
   setRemoteVideoEnabled: (enabled: boolean) => void;
   endCall: () => void;
   reset: () => void;
@@ -115,6 +117,7 @@ const initialState = {
   isVideoEnabled: false,
   isSpeakerEnabled: false,
   isRemoteVideoEnabled: true,
+  isFrontCamera: true, // Default to front camera
   isGroupCall: false,
   participants: new Map<number, Participant>(),
   groupName: null,
@@ -134,8 +137,8 @@ export const useCallStore: any = create<CallState>((set) => ({
       conversationId,
       isIncoming: false,
       status: 'calling',
-      isVideoEnabled: callType === 'video',
-      isSpeakerEnabled: callType === 'video',
+      isVideoEnabled: false,
+      isSpeakerEnabled: false,
     }),
 
   receiveCall: ({ callId, callType, callerUserId, callerName, conversationId, offer }) =>
@@ -148,8 +151,8 @@ export const useCallStore: any = create<CallState>((set) => ({
       offer,
       isIncoming: true,
       status: 'ringing',
-      isVideoEnabled: callType === 'video',
-      isSpeakerEnabled: callType === 'video',
+      isVideoEnabled: callType === 'video', // Enable video for incoming video calls
+      isSpeakerEnabled: false,
     }),
 
   setLocalStream: (stream) => set({ localStream: stream }),
@@ -158,7 +161,7 @@ export const useCallStore: any = create<CallState>((set) => ({
 
   setOffer: (offer) => set({ offer }),
 
-  setCallType: (callType) => set({ callType, isVideoEnabled: callType === 'video' }),
+  setCallType: (callType) => set({ callType }),
 
   toggleMute: () =>
     set((state) => {
@@ -188,6 +191,12 @@ export const useCallStore: any = create<CallState>((set) => ({
       const newSpeakerState = !state.isSpeakerEnabled;
       InCallManager.setForceSpeakerphoneOn(newSpeakerState);
       return { isSpeakerEnabled: newSpeakerState };
+    }),
+
+  switchCamera: () =>
+    set((state) => {
+      // Toggle camera facing mode
+      return { isFrontCamera: !state.isFrontCamera };
     }),
 
   setRemoteVideoEnabled: (enabled: boolean) => set({ isRemoteVideoEnabled: enabled }),
@@ -223,8 +232,8 @@ export const useCallStore: any = create<CallState>((set) => ({
       isGroupCall: true,
       isIncoming: false,
       status: 'calling',
-      isVideoEnabled: callType === 'video',
-      isSpeakerEnabled: callType === 'video',
+      isVideoEnabled: false,
+      isSpeakerEnabled: false,
       participants: new Map(),
     }),
 
@@ -237,7 +246,7 @@ export const useCallStore: any = create<CallState>((set) => ({
           userName,
           stream: null,
           isMuted: false,
-          isVideoEnabled: callType === 'video',
+          isVideoEnabled: false,
         });
       });
 
@@ -250,8 +259,8 @@ export const useCallStore: any = create<CallState>((set) => ({
         isGroupCall: true,
         isIncoming: true,
         status: 'ringing',
-        isVideoEnabled: callType === 'video',
-        isSpeakerEnabled: callType === 'video',
+        isVideoEnabled: callType === 'video', // Enable video for incoming video calls
+        isSpeakerEnabled: false,
         participants: participantMap,
       };
     }),
@@ -270,7 +279,7 @@ export const useCallStore: any = create<CallState>((set) => ({
           userName,
           stream: stream || null,
           isMuted: false,
-          isVideoEnabled: state.callType === 'video',
+          isVideoEnabled: false,
         };
 
       newParticipants.set(userId, updatedParticipant);
@@ -302,7 +311,7 @@ export const useCallStore: any = create<CallState>((set) => ({
           userName: '...', // Placeholder until server sends real name
           stream,
           isMuted: false,
-          isVideoEnabled: state.callType === 'video',
+          isVideoEnabled: false,
         };
 
       newParticipants.set(userId, updatedParticipant);

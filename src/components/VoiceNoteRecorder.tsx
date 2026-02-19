@@ -36,8 +36,8 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
   useEffect(() => {
     return () => {
       // Cleanup on unmount
-      audioRecorderPlayer.stopRecorder().catch(() => {});
-      audioRecorderPlayer.stopPlayer().catch(() => {});
+      audioRecorderPlayer.stopRecorder().catch(() => { });
+      audioRecorderPlayer.stopPlayer().catch(() => { });
       audioRecorderPlayer.removeRecordBackListener();
       audioRecorderPlayer.removePlayBackListener();
     };
@@ -111,6 +111,17 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
     if (!hasPermission) return;
 
     try {
+      // Always stop any previous recorder session first to prevent
+      // "startRecorder has already been called" error.
+      // This is needed because audioRecorderPlayer is a module-level singleton
+      // and may still be in a recording state from a previous component mount.
+      try {
+        await audioRecorderPlayer.stopRecorder();
+      } catch (_) {
+        // Ignore - recorder may not have been active
+      }
+      audioRecorderPlayer.removeRecordBackListener();
+
       // Use app cache directory to avoid needing broad storage permissions
       const fileName = `voice_${Date.now()}.m4a`;
       const path = Platform.select({
@@ -170,8 +181,8 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
   };
 
   const handleCancel = async () => {
-    await audioRecorderPlayer.stopRecorder().catch(() => {});
-    await audioRecorderPlayer.stopPlayer().catch(() => {});
+    await audioRecorderPlayer.stopRecorder().catch(() => { });
+    await audioRecorderPlayer.stopPlayer().catch(() => { });
     audioRecorderPlayer.removeRecordBackListener();
     audioRecorderPlayer.removePlayBackListener();
     setState('idle');

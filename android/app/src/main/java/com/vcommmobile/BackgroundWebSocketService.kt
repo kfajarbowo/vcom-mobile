@@ -8,9 +8,15 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
+import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.facebook.react.bridge.Arguments
@@ -27,7 +33,7 @@ class BackgroundWebSocketService : Service() {
         const val SERVICE_NOTIFICATION_ID = 2001
         
         private const val RECONNECT_DELAY_MS = 5000L
-        private const val MAX_RECONNECT_ATTEMPTS = 100
+        private const val MAX_RECONNECT_DELAY_MS = 60000L
         private const val PING_INTERVAL_MS = 30000L
     }
 
@@ -40,6 +46,7 @@ class BackgroundWebSocketService : Service() {
     private var isRunning = false
     private var pingHandler: android.os.Handler? = null
     private var pingRunnable: Runnable? = null
+    private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +54,7 @@ class BackgroundWebSocketService : Service() {
         createMessageNotificationChannel()
         createCallNotificationChannel()
         acquireWakeLock()
+        registerNetworkCallback()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -104,6 +112,7 @@ class BackgroundWebSocketService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        unregisterNetworkCallback()
         disconnectFromWebSocket()
         releaseWakeLock()
     }
@@ -550,18 +559,16 @@ class BackgroundWebSocketService : Service() {
     private fun scheduleReconnect() {
         if (!isRunning) return
 
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-            reconnectAttempts++
-            Log.d(TAG, "Scheduling reconnect attempt $reconnectAttempts")
+        acquireWakeLock() // Refresh the 10-min wake lock
+        reconnectAttempts++
+        val delay = minOf(RECONNECT_DELAY_MS * reconnectAttempts, MAX_RECONNECT_DELAY_MS)
+        Log.d(TAG, "Scheduling reconnect attempt $reconnectAttempts (delay: ${delay}ms)")
 
-            android.os.Handler(mainLooper).postDelayed({
-                if (isRunning) {
-                    connectToWebSocket()
-                }
-            }, RECONNECT_DELAY_MS * reconnectAttempts)
-        } else {
-            Log.e(TAG, "Max reconnect attempts reached")
-        }
+        android.os.Handler(mainLooper).postDelayed({
+            if (isRunning) {
+                connectToWebSocket()
+            }
+        }, delay)
     }
 
     private fun startPingHandler() {
@@ -589,6 +596,54 @@ class BackgroundWebSocketService : Service() {
         pingRunnable?.let { pingHandler?.removeCallbacks(it) }
         pingHandler = null
         pingRunnable = null
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(TAG, "Network available, triggering reconnect...")
+                    reconnectAttempts = 0
+                    android.os.Handler(mainLooper).post {
+                        if (isRunning) {
+                            connectToWebSocket()
+                        }
+                    }
+                }
+            }
+            cm.registerNetworkCallback(request, connectivityCallback!!)
+            Log.d(TAG, "Network callback registered")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering network callback: ${e.message}")
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        try {
+            connectivityCallback?.let {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            }
+            connectivityCallback = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering network callback: ${e.message}")
+        }
+    }
+
+    fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+            }
+        }
     }
 
     private fun disconnectFromWebSocket() {

@@ -13,6 +13,7 @@ export interface Message {
   attachmentUrl?: string;
   attachmentName?: string;
   attachmentSize?: number;
+  attachmentThumbnailUrl?: string;
   replyToId?: number;
   forwardedFromId?: number;
   isDeleted?: boolean;

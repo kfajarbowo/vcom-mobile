@@ -29,6 +29,8 @@ interface CallHistoryItem {
   duration: number;
   timestamp: string;
   startTime?: string;
+  conversationId?: number;
+  participants?: string[];
   participantNames?: string[];
 }
 
@@ -203,40 +205,68 @@ export function CallsScreen() {
 
   const handleCallback = async (call: CallHistoryItem) => {
     try {
+      const callType = call.callType?.includes('video') ? 'video' : 'audio';
+      const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
       if (call.callType?.startsWith('group_')) {
-        Alert.alert(
-          'Group Calls Not Yet Supported',
-          'Group video/audio calls are coming soon!',
-          [{text: 'OK'}]
-        );
+        // Group call callback
+        const conversationId = call.conversationId;
+        if (!conversationId) {
+          Alert.alert('Error', 'Conversation not found for this group call.');
+          return;
+        }
+
+        console.log('[CallsScreen] Starting group callback:', {
+          callId,
+          callType,
+          conversationId,
+          groupName: call.contactName,
+        });
+
+        useCallStore.getState().startGroupCall({
+          callId,
+          callType: callType as 'audio' | 'video',
+          participantIds: call.participants?.map(id => parseInt(id)) || [],
+          conversationId,
+          groupName: call.contactName,
+        });
+
+        await webrtcService.startCall(callType as 'audio' | 'video');
         return;
       }
 
-      // Determine the target user ID and call type
+      // 1:1 call callback
       const targetUserId = call.isOutgoing ? call.toUserId : call.fromUserId;
       const targetName = call.contactName;
-      const callType = call.callType?.includes('video') ? 'video' : 'audio';
 
-      // Generate a new call ID
-      const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // Look up the direct conversation for this user
+      let conversationId: number | undefined;
+      try {
+        const conversations = await apiRequest<any[]>('/api/direct-chats');
+        const directConv = conversations?.find((c: any) =>
+          c.members?.some((m: any) => m.userId === targetUserId)
+        );
+        conversationId = directConv?.id;
+      } catch (e) {
+        console.warn('[CallsScreen] Could not look up direct conversation:', e);
+      }
 
       console.log('[CallsScreen] Starting callback:', {
         callId,
         callType,
         targetUserId,
         targetName,
+        conversationId,
       });
 
-      // Update call store
       useCallStore.getState().startCall({
         callId,
         callType: callType as 'audio' | 'video',
         receiverUserId: targetUserId,
         receiverName: targetName,
-        conversationId: call.isOutgoing ? call.toUserId : call.fromUserId, // Use user ID as conversation ID for now
+        conversationId: conversationId || targetUserId,
       });
 
-      // Start WebRTC connection
       await webrtcService.startCall(callType as 'audio' | 'video');
     } catch (error: any) {
       console.error('[CallsScreen] Error during callback:', error);
@@ -265,6 +295,12 @@ export function CallsScreen() {
             </View>
           )}
         </View>
+
+        {item.callType?.startsWith('group_') && item.participantNames && item.participantNames.length > 0 && (
+          <Text style={styles.participantNames} numberOfLines={1}>
+            {item.participantNames.join(', ')}
+          </Text>
+        )}
 
         <View style={styles.callDetails}>
           {getCallStatusIcon(item.status, item.isOutgoing)}
@@ -493,6 +529,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#a6c455',
     letterSpacing: 1,
+  },
+  participantNames: {
+    fontSize: 12,
+    color: '#888',
+    marginBottom: 4,
   },
   callDetails: {
     flexDirection: 'row',

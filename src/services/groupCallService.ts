@@ -10,7 +10,7 @@ import InCallManager from 'react-native-incall-manager';
 import { websocketService } from './websocket';
 import { useCallStore, CallType } from '../store/callStore';
 import { useAuthStore } from '../store/authStore';
-import { requestCameraAndMicrophonePermissions, requestMicrophonePermission } from '../utils/permissions';
+import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
 import {
   ICE_SERVERS,
   getMediaConstraints,
@@ -173,19 +173,18 @@ export class GroupCallService {
     return peerConnection;
   }
 
-  // Get user media (camera/microphone)
+  // Get user media (camera/microphone) — always requests both
   async getUserMedia(callType: CallType): Promise<MediaStream> {
     console.log('[WebRTC Group] Getting user media:', callType);
 
-    const hasPermissions = callType === 'video'
-      ? await requestCameraAndMicrophonePermissions()
-      : await requestMicrophonePermission();
+    // Always request camera + mic permissions (unified call UI)
+    const hasPermissions = await requestCameraAndMicrophonePermissions();
 
     if (!hasPermissions) {
       throw new Error('Camera/Microphone permissions not granted');
     }
 
-    const constraints = getMediaConstraints(callType);
+    const constraints = getMediaConstraints();
 
     try {
       const stream = await mediaDevices.getUserMedia(constraints);
@@ -193,6 +192,13 @@ export class GroupCallService {
       console.log('[WebRTC Group] Stream ID:', stream.id);
       console.log('[WebRTC Group] Audio tracks:', stream.getAudioTracks().length);
       console.log('[WebRTC Group] Video tracks:', stream.getVideoTracks().length);
+
+      // Camera state based on call type:
+      // - video calls: camera ON by default
+      // - audio calls: camera OFF by default (can be enabled via video button)
+      const shouldEnableVideo = callType === 'video';
+      stream.getVideoTracks().forEach(track => { track.enabled = shouldEnableVideo; });
+      useCallStore.setState({ isVideoEnabled: shouldEnableVideo });
 
       // Monitor audio track state
       stream.getAudioTracks().forEach((track, index) => {
@@ -246,12 +252,11 @@ export class GroupCallService {
         currentUserId: currentUser?.id
       });
 
-      // Start audio session - video calls use speaker, audio calls use earpiece
+      // Start audio session — earpiece by default (camera starts off)
       const options = getInCallManagerOptions(callState.callType);
       InCallManager.start(options);
-      const useSpeaker = callState.callType === 'video';
-      InCallManager.setForceSpeakerphoneOn(useSpeaker);
-      console.log(`[WebRTC Group] Audio session started, speaker: ${useSpeaker}`);
+      InCallManager.setForceSpeakerphoneOn(false);
+      console.log('[WebRTC Group] Audio session started, speaker: false');
 
       // Start periodic audio health check
       this.startAudioHealthCheck();

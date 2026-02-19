@@ -90,6 +90,18 @@ export function CallManager() {
 
     const removeHandler = websocketService.addMessageHandler(async (message: WebSocketMessage) => {
       try {
+        // Skip non-call messages early to avoid unnecessary processing
+        const callMessageTypes = new Set([
+          'incoming_call', 'webrtc_offer', 'webrtc_answer', 'webrtc_ice_candidate',
+          'call_accepted', 'end_call', 'call_ended', 'call_rejected', 'call_failed',
+          'initiate_call', 'incoming_group_call', 'join_group_call',
+          'group_call_initiated', 'group_call_participants_update',
+          'group_webrtc_offer', 'group_webrtc_answer', 'group_webrtc_ice_candidate',
+          'initiate_group_webrtc', 'participant_joined', 'participant_left',
+          'leave_group_call', 'force_webrtc_reconnect', 'call_missed',
+        ]);
+        if (!callMessageTypes.has(message.type)) return;
+
         // Get fresh state on each message
         const callStore = useCallStore.getState();
         const currentUser = useAuthStore.getState().user;
@@ -436,26 +448,13 @@ export function CallManager() {
               }
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
-              if (callStore.isGroupCall) {
-                // If we are already in a group call, and another group call comes in,
-                // we should try to join the new one if it's the same group, or reject if different.
-                // For now, let's assume we want to join if possible, or reject.
-                // This logic might need refinement based on specific requirements.
-                console.log('[CallManager] Already in a group call, attempting to join new group call if applicable.');
-                // This part is speculative, assuming a scenario where joining is desired.
-                // If the intent is to always reject, the original logic is fine.
-                // For now, let's just reject to avoid complex state management.
-                websocketService.send({
-                  type: 'reject_group_call',
-                  payload: {
-                    callId,
-                    groupId,
-                    fromUserId: currentUser?.id,
-                    userName: currentUser?.callsign || currentUser?.fullName
-                  }
-                });
+
+              // If already in the SAME group call, just ignore — don't reject
+              // Rejecting would remove us from the server's participant set
+              if (callStore.isGroupCall && callStore.conversationId === groupId) {
+                console.log('[CallManager] Already in this group call, silently ignoring notification');
               } else {
-                // If already in a 1-on-1 call, reject the incoming group call
+                // Different call — reject
                 websocketService.send({
                   type: 'reject_group_call',
                   payload: {
@@ -485,6 +484,21 @@ export function CallManager() {
                   );
                 }
               });
+            }
+            break;
+          }
+
+          case 'group_call_initiated': {
+            // Server responds with the actual callId (may differ from what mobile sent for rejoin)
+            console.log('[CallManager] Group call initiated response received');
+            const payload = message.payload || message;
+            const { callId: serverCallId, originalCallId, isRejoin } = payload as any;
+            const callStore = useCallStore.getState();
+
+            // If this is a rejoin and the server gave us a different callId, update our local state
+            if (isRejoin && serverCallId && callStore.callId !== serverCallId) {
+              console.log(`[CallManager] Rejoin: updating local callId from ${callStore.callId} to ${serverCallId}`);
+              useCallStore.setState({ callId: serverCallId });
             }
             break;
           }
@@ -519,14 +533,15 @@ export function CallManager() {
                 // Prefer server-resolved name from participantData, then from inline data
                 const participantName = nameMap.get(participantId)
                   || (typeof participant === 'object'
-                    ? (participant.callsign || participant.userName || `User ${participantId}`)
-                    : `User ${participantId}`);
+                    ? (participant.callsign || participant.userName || undefined)
+                    : undefined);
 
                 if (participantId && participantId !== currentUser?.id) {
-                  // Check if participant already exists
                   const existing = callStore.getParticipant(participantId);
                   if (!existing) {
-                    console.log('[CallManager] Adding new participant:', participantId);
+                    callStore.addParticipant(participantId, participantName || `User ${participantId}`);
+                  } else if (participantName && (existing.userName === '...' || existing.userName.startsWith('User '))) {
+                    // Update placeholder name with resolved name
                     callStore.addParticipant(participantId, participantName);
                   }
                 }
@@ -605,9 +620,25 @@ export function CallManager() {
               const uniqueParticipants = [...new Set(participants.map((p: any) => p.userId || p))];
               console.log('[CallManager] Unique participants:', uniqueParticipants);
 
+              // Build name lookup from participant objects
+              const nameLookup = new Map<number, string>();
+              participants.forEach((p: any) => {
+                if (p.userId && p.userName) {
+                  nameLookup.set(p.userId, p.userName);
+                }
+              });
+
               for (const participantId of uniqueParticipants) {
                 console.log('[CallManager] Checking participant:', participantId, 'vs current user:', currentUser?.id);
                 if (participantId !== currentUser?.id) {
+                  // Add/update participant name from server-resolved data
+                  const resolvedName = nameLookup.get(participantId);
+                  if (resolvedName) {
+                    const existing = callStore.getParticipant(participantId);
+                    if (!existing || existing.userName === '...' || existing.userName.startsWith('User ')) {
+                      callStore.addParticipant(participantId, resolvedName);
+                    }
+                  }
                   console.log('[CallManager] ✅ Creating offer to participant:', participantId);
                   await webrtcService.createGroupOffer(participantId);
                 } else {
@@ -653,12 +684,21 @@ export function CallManager() {
           }
 
           case 'call_missed': {
-            console.log('[CallManager] Call missed (timeout from server)');
-            toast.show('Call was not answered', 'info');
-            if (callStore.isGroupCall) {
-              webrtcService.endGroupCall();
+            const missedPayload = message.payload || message;
+            const { reason, fromUserName } = missedPayload as any;
+            console.log('[CallManager] Call missed:', reason, fromUserName);
+
+            if (reason === 'offline' && fromUserName) {
+              // Missed call notification delivered on reconnect
+              toast.show(`Missed call from ${fromUserName}`, 'info');
             } else {
-              webrtcService.endCall();
+              // Caller side - call was not answered
+              toast.show('Call was not answered', 'info');
+              if (callStore.isGroupCall) {
+                webrtcService.endGroupCall();
+              } else {
+                webrtcService.endCall();
+              }
             }
             break;
           }

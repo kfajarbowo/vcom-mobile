@@ -107,7 +107,11 @@ class WebSocketService {
       this.ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
-          console.log('[WebSocket] 📨 Message received:', message.type);
+
+          // Only log non-frequent message types to reduce noise
+          if (message.type !== 'user_status' && message.type !== 'pong') {
+            console.log('[WebSocket] 📨 Message received:', message.type);
+          }
 
           // Log full message for call-related types
           if (message.type === 'webrtc_answer' || message.type === 'webrtc_offer') {
