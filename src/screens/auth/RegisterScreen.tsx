@@ -12,11 +12,11 @@ import { apiRequest } from '../../services/apiClient';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 const registerSchema = z.object({
+  nrp: z.string().min(5, 'NRP/ID must be at least 5 characters'),
   callsign: z.string().min(3, 'Callsign must be at least 3 characters'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
   confirmPassword: z.string(),
   fullName: z.string().min(3, 'Full name must be at least 3 characters'),
-  nrp: z.string().min(5, 'NRP/ID must be at least 5 characters'),
   rank: z.string().min(1, 'Rank is required'),
   branch: z.string().min(1, 'Branch is required'),
 }).refine((data) => data.password === data.confirmPassword, {
@@ -60,11 +60,11 @@ export function RegisterScreen({ navigation }: Props) {
   } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
+      nrp: '',
       callsign: '',
       password: '',
       confirmPassword: '',
       fullName: '',
-      nrp: '',
       rank: '',
       branch: '',
     },
@@ -153,14 +153,12 @@ export function RegisterScreen({ navigation }: Props) {
       let userFriendlyMessage = errorMessage;
       let suggestions: string[] = [];
 
-      if (errorMessage.includes('already taken') || errorMessage.includes('already exists')) {
-        suggestions.push('Try a different callsign');
-      } else if (errorMessage.includes('NRP') || errorMessage.includes('already registered')) {
+      if (errorMessage.includes('NRP') || errorMessage.includes('already registered')) {
         suggestions.push('This NRP/ID is already registered');
-        suggestions.push('Contact admin if this is your ID');
+        suggestions.push('Each NRP must be unique — contact admin if this is your ID');
       } else if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
         suggestions.push('Check your internet connection');
-        suggestions.push('Verify server is running at 31.97.50.227:5000');
+        suggestions.push('Verify server is running');
       }
 
       Alert.alert(
@@ -192,6 +190,30 @@ export function RegisterScreen({ navigation }: Props) {
           </View>
 
           <View style={styles.formContainer}>
+            {/* NRP first - it is the unique login identifier */}
+            <Controller
+              control={control}
+              name="nrp"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.label}>NRP / PERSONNEL ID ★ (LOGIN ID)</Text>
+                  <Input
+                    placeholder="ENTER NRP (UNIQUE)"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    error={errors.nrp?.message}
+                    keyboardType="numeric"
+                    autoCorrect={false}
+                  />
+                  {errors.nrp && (
+                    <Text style={styles.errorText}>{errors.nrp.message}</Text>
+                  )}
+                  <Text style={styles.fieldHint}>Used to log in. Must be unique per personnel.</Text>
+                </View>
+              )}
+            />
+
             <Controller
               control={control}
               name="callsign"
@@ -210,27 +232,7 @@ export function RegisterScreen({ navigation }: Props) {
                   {errors.callsign && (
                     <Text style={styles.errorText}>{errors.callsign.message}</Text>
                   )}
-                </View>
-              )}
-            />
-
-            <Controller
-              control={control}
-              name="nrp"
-              render={({ field: { onChange, onBlur, value } }) => (
-                <View style={styles.fieldContainer}>
-                  <Text style={styles.label}>NRP / PERSONNEL ID</Text>
-                  <Input
-                    placeholder="ENTER NRP"
-                    value={value}
-                    onChangeText={onChange}
-                    onBlur={onBlur}
-                    error={errors.nrp?.message}
-                    keyboardType="numeric"
-                  />
-                  {errors.nrp && (
-                    <Text style={styles.errorText}>{errors.nrp.message}</Text>
-                  )}
+                  <Text style={styles.fieldHint}>Display name only. Can be shared between personnel.</Text>
                 </View>
               )}
             />
@@ -493,5 +495,12 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     marginTop: 12,
+  },
+  fieldHint: {
+    fontSize: 10,
+    color: '#5a6b38',
+    marginTop: 4,
+    letterSpacing: 0.3,
+    fontStyle: 'italic',
   },
 });

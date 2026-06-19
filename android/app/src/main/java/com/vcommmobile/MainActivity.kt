@@ -41,6 +41,7 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     handleCallIntent(intent)
+    SiteConfigModule.handleIntent(intent)
   }
 
   override fun onResume() {
@@ -53,11 +54,13 @@ class MainActivity : ReactActivity() {
     setAppForegroundState(false)
   }
 
-  override fun onNewIntent(intent: Intent?) {
+  override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
-    intent?.let { handleCallIntent(it) }
+    setIntent(intent)
+    handleCallIntent(intent)
+    SiteConfigModule.handleIntent(intent)
   }
-
+  
   private fun handleCallIntent(intent: Intent) {
     val callAction = intent.getStringExtra("callAction")
     if (callAction != null) {

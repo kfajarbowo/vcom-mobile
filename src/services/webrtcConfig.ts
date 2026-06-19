@@ -5,43 +5,40 @@ import { CallType } from '../store/callStore';
  * Shared configuration for all WebRTC connections
  */
 
-// Configurable TURN server (#5) - change this for deployment
-const TURN_SERVER = '192.168.1.72:3478';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Configurable TURN server defaults
 const TURN_USERNAME = 'test';
 const TURN_CREDENTIAL = 'test123';
 
-// ICE server configuration
-export const ICE_SERVERS = {
-  iceServers: [
-    // Google's public STUN servers
-    {
-      urls: 'stun:stun.l.google.com:19302',
-    },
-    {
-      urls: 'stun:stun1.l.google.com:19302',
-    },
-    {
-      urls: 'stun:stun2.l.google.com:19302',
-    },
-    // TURN server (configurable)
-    {
-      urls: `turn:${TURN_SERVER}`,
-      username: TURN_USERNAME,
-      credential: TURN_CREDENTIAL,
-    },
-    {
-      urls: `turn:${TURN_SERVER}?transport=udp`,
-      username: TURN_USERNAME,
-      credential: TURN_CREDENTIAL,
-    },
-    {
-      urls: `turn:${TURN_SERVER}?transport=tcp`,
-      username: TURN_USERNAME,
-      credential: TURN_CREDENTIAL,
-    },
-  ],
-  iceTransportPolicy: 'all' as const,
-  iceCandidatePoolSize: 10,
+// Get dynamic ICE server configuration
+export const getIceServers = async () => {
+  let host = 'chat.id';
+  try {
+    const storedHost = await AsyncStorage.getItem('vcomm_server_host');
+    if (storedHost) {
+      host = storedHost;
+    }
+  } catch (error) {
+    console.error('Failed to get server host for WebRTC config:', error);
+  }
+
+  const turnServer = `${host}:3478`;
+
+  return {
+    iceServers: [
+      // Google's public STUN servers
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      // TURN server (dynamic)
+      { urls: `turn:${turnServer}`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: `turn:${turnServer}?transport=udp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: `turn:${turnServer}?transport=tcp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+    ],
+    iceTransportPolicy: 'all' as const,
+    iceCandidatePoolSize: 10,
+  };
 };
 
 // Media constraints for getUserMedia
@@ -55,10 +52,10 @@ export const getMediaConstraints = () => ({
     channelCount: { ideal: 1 },
   },
   video: {
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 30 },
     facingMode: 'user',
+    width: 1280,
+    height: 720,
+    frameRate: 30,
   },
 });
 

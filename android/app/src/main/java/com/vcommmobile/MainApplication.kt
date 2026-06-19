@@ -22,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
               // add(MyReactNativePackage())
               add(FileOpenerPackage())
               add(CallNotificationPackage())
+              add(SiteConfigPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"

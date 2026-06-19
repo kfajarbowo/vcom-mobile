@@ -1,12 +1,12 @@
-import React, {useEffect} from 'react';
-import {View, Text, Modal, TouchableOpacity, StyleSheet} from 'react-native';
+import React, { useEffect } from 'react';
+import { View, Text, Modal, TouchableOpacity, StyleSheet } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {Participant, useCallStore} from '../store/callStore';
-import {webrtcService} from '../services/webrtcService';
-import {callNotificationService} from '../services/callNotificationService';
+import { Participant, useCallStore } from '../store/callStore';
+import { webrtcService } from '../services/webrtcService';
+import { callNotificationService } from '../services/callNotificationService';
 
 export function IncomingCallModal() {
-  const {status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants} = useCallStore();
+  const { status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants } = useCallStore();
 
   const isVisible = status === 'ringing';
   const participants = getAllParticipants();
@@ -14,25 +14,26 @@ export function IncomingCallModal() {
   // For 1-on-1 calls, we need the offer to accept
   const canAccept = isGroupCall || !!offer;
 
-  // Cancel native notification when modal becomes visible (app is in foreground)
-  useEffect(() => {
-    if (isVisible) {
-      console.log('[IncomingCallModal] Visible, canceling native notification');
-      callNotificationService.cancelCallNotification();
-    }
-  }, [isVisible]);
-
   // Report call ended to CallKit when call ends (iOS)
   useEffect(() => {
     if (status === 'ended' || status === 'idle') {
       callNotificationService.reportCallEnded();
-    } else if (status === 'active') {
-      callNotificationService.reportCallConnected();
+      callNotificationService.cancelCallNotification(); // Explicitly cancel on end
+    } else if (status === 'active' || status === 'calling') {
+      if (status === 'active') {
+        callNotificationService.reportCallConnected();
+      }
+      callNotificationService.cancelCallNotification(); // Cancel once connected or answering
     }
   }, [status]);
 
   const handleAccept = async () => {
     try {
+      // Cancel notification IMMEDIATELY before any state changes
+      // (state changes cause this component to unmount, preventing useEffect cleanup)
+      console.log('[IncomingCall] Canceling notification on accept');
+      callNotificationService.cancelCallNotification();
+
       // Get fresh state from store to ensure we have the latest values
       const currentState = useCallStore.getState();
       const currentOffer = currentState.offer;
@@ -79,6 +80,11 @@ export function IncomingCallModal() {
 
   const handleReject = () => {
     console.log('[IncomingCall] Rejecting call');
+    // Cancel notification IMMEDIATELY before any state changes
+    // (state changes cause this component to unmount, preventing useEffect cleanup)
+    console.log('[IncomingCall] Canceling notification on reject');
+    callNotificationService.cancelCallNotification();
+
     // Get fresh state from store
     const currentState = useCallStore.getState();
     if (currentState.isGroupCall) {

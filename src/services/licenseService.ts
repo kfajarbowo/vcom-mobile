@@ -9,12 +9,23 @@ const DEFAULT_LICENSE_HOST = '';
 const DEFAULT_LICENSE_PORT = '';
 
 /**
- * Get license server base URL (separate from main app server)
+ * Get license server base URL
  */
 export const getLicenseServerUrl = async (): Promise<string> => {
-  const host = (await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_HOST)) || DEFAULT_LICENSE_HOST;
-  const port = (await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_PORT)) || DEFAULT_LICENSE_PORT;
   const protocol = 'http';
+  let host = 'blm.id';
+  let port = '3001';
+
+  try {
+    const storedHost = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_HOST);
+    const storedPort = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_PORT);
+
+    if (storedHost) host = storedHost;
+    if (storedPort) port = storedPort;
+  } catch (error) {
+    console.error('[License] Error reading license server config from storage:', error);
+  }
+
   console.log(`[License] Using license server: ${protocol}://${host}:${port}`);
   return `${protocol}://${host}:${port}`;
 };
@@ -23,8 +34,13 @@ export const getLicenseServerUrl = async (): Promise<string> => {
  * Set license server configuration
  */
 export const setLicenseServer = async (host: string, port: string): Promise<void> => {
-  await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_HOST, host);
-  await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_PORT, port);
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_HOST, host);
+    await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_PORT, port);
+    console.log('[License] License server config saved');
+  } catch (error) {
+    console.error('[License] Error saving license server config:', error);
+  }
 };
 
 export interface LicenseCheckResult {
@@ -101,10 +117,23 @@ export const activateLicenseOnServer = async (licenseKey: string): Promise<Licen
     const baseUrl = await getLicenseServerUrl();
     console.log('[License] Activating key on server:', baseUrl);
 
-    const res = await fetch(`${baseUrl}/api/license/test/mark-used`, {
+    const hardwareId = await getDeviceHardwareId();
+    let deviceName = 'VCOMM-Mobile';
+    try {
+      const DeviceInfo = require('react-native-device-info');
+      deviceName = await DeviceInfo.getDeviceName();
+    } catch (e) {
+      console.warn('[License] react-native-device-info not available for deviceName');
+    }
+
+    const res = await fetch(`${baseUrl}/api/license/activate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseKey }),
+      body: JSON.stringify({
+        licenseKey,
+        hardwareId,
+        deviceName
+      }),
     });
     const data = await res.json();
 

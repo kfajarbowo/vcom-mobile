@@ -573,6 +573,33 @@ export function ChatRoom({
   };
 
   // Helper function to get document icon and color based on file type
+  // Infer MIME type from file extension when the picker doesn't provide one
+  const getMimeTypeFromName = (fileName: string | undefined): string | null => {
+    if (!fileName) return null;
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (!ext) return null;
+    const mimeMap: Record<string, string> = {
+      pdf: 'application/pdf',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      txt: 'text/plain',
+      csv: 'text/plain',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+      mp3: 'audio/mpeg',
+      wav: 'audio/wav',
+    };
+    return mimeMap[ext] || null;
+  };
+
   const getDocumentIcon = (fileName: string | undefined, mimeType: string | undefined): { icon: string; color: string } => {
     const name = (fileName || '').toLowerCase();
     const type = (mimeType || '').toLowerCase();
@@ -706,9 +733,10 @@ export function ChatRoom({
     launchCamera(
       {
         mediaType: 'video',
-        videoQuality: 'medium',
+        videoQuality: 'high',
         durationLimit: 60,
         saveToPhotos: true,
+        cameraType: 'back',
       },
       (response) => {
         if (response.didCancel) {
@@ -760,10 +788,30 @@ export function ChatRoom({
       if (result && result[0]) {
         const doc = result[0];
         console.log('[ChatRoom] Document selected:', doc);
+        console.log('[ChatRoom] fileCopyUri:', doc.fileCopyUri, 'uri:', doc.uri);
+
+        let uploadUri = doc.fileCopyUri;
+
+        // If copyTo didn't produce a fileCopyUri (happens with cloud providers
+        // or scoped storage), manually copy the content:// URI to a local cache
+        // file so RNFetchBlob.wrap() can read it. Without this the upload
+        // sends empty data and the file is corrupted.
+        if (!uploadUri && doc.uri && Platform.OS === 'android') {
+          try {
+            const ext = doc.name?.split('.').pop() || '';
+            const cachePath = `${RNFetchBlob.fs.dirs.CacheDir}/upload_${Date.now()}.${ext}`;
+            console.log('[ChatRoom] Copying content URI to cache:', doc.uri, '->', cachePath);
+            await RNFetchBlob.fs.cp(doc.uri, cachePath);
+            uploadUri = cachePath;
+            console.log('[ChatRoom] Copy succeeded, new path:', cachePath);
+          } catch (cpErr) {
+            console.error('[ChatRoom] Failed to copy content URI to cache:', cpErr);
+          }
+        }
 
         // Convert to the same format as image picker
         const attachment = {
-          uri: doc.fileCopyUri || doc.uri,
+          uri: uploadUri || doc.uri,
           type: doc.type,
           fileName: doc.name,
           fileSize: doc.size,
@@ -786,10 +834,41 @@ export function ChatRoom({
     const sessionToken = await getSessionToken();
 
     try {
-      // Normalize file URI for RNFetchBlob
+      // Normalize file URI for RNFetchBlob — wrap() requires a raw filesystem path.
+      // fileCopyUri from react-native-document-picker is a URI with URL-encoded
+      // special characters (spaces → %20, accents, etc.). The filesystem uses
+      // the real characters, so we must decode before passing to wrap()/stat().
       let fileUri = file.uri;
-      if (Platform.OS === 'android' && fileUri.startsWith('file://')) {
-        fileUri = fileUri.replace('file://', '');
+      if (Platform.OS === 'android') {
+        if (fileUri.startsWith('file://')) {
+          fileUri = fileUri.replace('file://', '');
+        } else if (fileUri.startsWith('content://')) {
+          // Last-resort fallback: copy content URI to a cache file so wrap() can read it
+          const ext = (file.fileName || '').split('.').pop() || '';
+          const cachePath = `${RNFetchBlob.fs.dirs.CacheDir}/upload_fallback_${Date.now()}.${ext}`;
+          console.log('[ChatRoom] Fallback: copying content URI to cache:', fileUri, '->', cachePath);
+          await RNFetchBlob.fs.cp(fileUri, cachePath);
+          fileUri = cachePath;
+        }
+        // Decode URL-encoded characters. Wrapped in try-catch because a path
+        // with literal % signs (e.g., "100%.pdf") would throw.
+        try {
+          fileUri = decodeURIComponent(fileUri);
+        } catch {
+          // Path is already plain or has literal % signs
+        }
+      }
+
+      // Verify file exists and has content before uploading
+      try {
+        const stat = await RNFetchBlob.fs.stat(fileUri);
+        if (stat.size === 0) {
+          throw new Error('Selected file is empty (0 bytes)');
+        }
+        console.log('[ChatRoom] File stat: size=' + stat.size + ', path=' + fileUri);
+      } catch (statErr: any) {
+        console.error('[ChatRoom] File stat check failed:', statErr.message);
+        throw new Error('Cannot access selected file. Please try again.');
       }
 
       console.log('[ChatRoom] Uploading via RNFetchBlob:', uploadUrl);
@@ -805,7 +884,7 @@ export function ChatRoom({
           {
             name: 'file',
             filename: file.fileName || 'attachment',
-            type: file.type || 'application/octet-stream',
+            type: file.type || getMimeTypeFromName(file.fileName) || 'application/octet-stream',
             data: RNFetchBlob.wrap(fileUri),
           },
         ],

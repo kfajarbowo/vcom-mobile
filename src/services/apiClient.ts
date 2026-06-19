@@ -22,15 +22,22 @@ export const STORAGE_KEYS = {
 } as const;
 
 /**
- * Get base API URL from storage or use default
+ * Get base API URL
  */
 export const getApiBaseUrl = async (): Promise<string> => {
-  // Try to get saved server settings from AsyncStorage
-  const host = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST)) || '192.168.204.105';
-  const port = (await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT)) || '5000';
-
-  // Using HTTP for local WiFi development (cleartext traffic allowed in network security config)
   const protocol = 'http';
+  let host = 'chat.id';
+  let port = '5000';
+
+  try {
+    const storedHost = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST);
+    const storedPort = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT);
+
+    if (storedHost) host = storedHost;
+    if (storedPort) port = storedPort;
+  } catch (error) {
+    console.error('[API] Error reading server config from storage:', error);
+  }
 
   console.log(`[API] Using server: ${protocol}://${host}:${port}`);
 
@@ -41,8 +48,12 @@ export const getApiBaseUrl = async (): Promise<string> => {
  * Set API server configuration
  */
 export const setApiServer = async (host: string, port: string): Promise<void> => {
-  await AsyncStorage.setItem(STORAGE_KEYS.SERVER_HOST, host);
-  await AsyncStorage.setItem(STORAGE_KEYS.SERVER_PORT, port);
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.SERVER_HOST, host);
+    await AsyncStorage.setItem(STORAGE_KEYS.SERVER_PORT, port);
+  } catch (error) {
+    console.error('[API] Error saving server config to storage:', error);
+  }
 };
 
 /**
@@ -72,7 +83,7 @@ export const apiFetch = async (
 
   // Add timeout handling
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
   try {
     console.log('[API] Sending network request...');
@@ -217,9 +228,9 @@ export const downloadAndOpenPDF = async (
     const stat = await fs.stat(downloadedPath);
     console.log('[API] File size:', stat.size, 'bytes');
 
-    if (stat.size < 100) {
-      throw new Error('Downloaded file is too small - might be an error response');
-    }
+    // if (stat.size < 100) {
+    //   throw new Error('Downloaded file is too small - might be an error response');
+    // }
 
     // Open the file with system PDF viewer
     if (Platform.OS === 'android') {
@@ -338,9 +349,9 @@ export const downloadAndOpenDocument = async (
     const stat = await fs.stat(downloadedPath);
     console.log('[API] File size:', stat.size, 'bytes');
 
-    if (stat.size < 100) {
-      throw new Error('Downloaded file is too small - might be an error response');
-    }
+    // if (stat.size < 100) {
+    //   throw new Error('Downloaded file is too small - might be an error response');
+    // }
 
     // Get MIME type based on file extension
     const mimeType = getMimeType(fileName);

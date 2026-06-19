@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,14 +7,12 @@ import {
   StyleSheet,
   StatusBar,
   ActivityIndicator,
-  Platform,
-  NativeModules,
+  Dimensions,
 } from 'react-native';
+import Video, { VideoRef } from 'react-native-video';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import RNFetchBlob from 'rn-fetch-blob';
-import { getSessionToken } from '../services/apiClient';
 
-const { FileOpener } = NativeModules;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface VideoPlayerModalProps {
   visible: boolean;
@@ -29,344 +27,294 @@ export function VideoPlayerModal({
   videoName,
   onClose,
 }: VideoPlayerModalProps) {
+  const videoRef = useRef<VideoRef>(null);
+  const [paused, setPaused] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const tempFileRef = useRef<string | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (visible && videoUrl) {
-      downloadAndPlayVideo();
-    }
-
-    return () => {
-      cleanupTempFile();
-    };
-  }, [visible, videoUrl]);
-
-  const cleanupTempFile = () => {
-    if (tempFileRef.current) {
-      RNFetchBlob.fs
-        .unlink(tempFileRef.current)
-        .catch(() => { }); // Ignore cleanup errors
-      tempFileRef.current = null;
-    }
-  };
-
-  const downloadAndPlayVideo = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setDownloadProgress(0);
-
-      const sessionToken = await getSessionToken();
-      if (!sessionToken) {
-        setError('No session token available');
-        setLoading(false);
-        return;
-      }
-
-      console.log('[VideoPlayerModal] Downloading video with auth:', videoUrl);
-
-      // Determine file extension from URL
-      const urlPath = videoUrl.split('?')[0];
-      const ext = urlPath.split('.').pop()?.toLowerCase() || 'mp4';
-
-      const res = await RNFetchBlob.config({
-        fileCache: true,
-        appendExt: ext,
-      })
-        .fetch('GET', videoUrl, {
-          'X-Session-Token': sessionToken,
-        })
-        .progress((received, total) => {
-          if (total > 0) {
-            setDownloadProgress(Math.round((received / total) * 100));
-          }
-        });
-
-      const filePath = res.path();
-      console.log('[VideoPlayerModal] Video downloaded to:', filePath);
-
-      tempFileRef.current = filePath;
-      setLoading(false);
-
-      // Open with native system video player
-      await openWithNativePlayer(filePath);
-    } catch (err: any) {
-      console.error('[VideoPlayerModal] Download error:', err);
-      setError(`Failed to download video: ${err.message || 'Unknown error'}`);
-      setLoading(false);
-    }
-  };
-
-  const openWithNativePlayer = async (filePath: string) => {
-    try {
-      // Determine MIME type from extension
-      const ext = filePath.split('.').pop()?.toLowerCase() || 'mp4';
-      const mimeTypes: Record<string, string> = {
-        mp4: 'video/mp4',
-        webm: 'video/webm',
-        mpeg: 'video/mpeg',
-        ogg: 'video/ogg',
-        avi: 'video/x-msvideo',
-        mkv: 'video/x-matroska',
-        '3gp': 'video/3gpp',
-        mov: 'video/quicktime',
-      };
-      const mimeType = mimeTypes[ext] || 'video/*';
-
-      console.log('[VideoPlayerModal] Opening with native player:', filePath, mimeType);
-
-      if (Platform.OS === 'android') {
-        try {
-          // Use our custom FileOpener module with FileProvider support
-          await FileOpener.openFile(filePath, mimeType);
-          console.log('[VideoPlayerModal] FileOpener succeeded');
-        } catch (openerError: any) {
-          console.error('[VideoPlayerModal] FileOpener failed:', openerError);
-
-          // Fallback: Try RNFetchBlob's actionViewIntent
-          try {
-            await RNFetchBlob.android.actionViewIntent(filePath, mimeType);
-            console.log('[VideoPlayerModal] actionViewIntent succeeded');
-          } catch (intentError: any) {
-            console.error('[VideoPlayerModal] actionViewIntent failed:', intentError);
-            setError('No video player app found. Please install a video player.');
-          }
-        }
-      } else {
-        // iOS
-        try {
-          await RNFetchBlob.ios.openDocument(filePath);
-        } catch (iosError: any) {
-          console.error('[VideoPlayerModal] iOS openDocument failed:', iosError);
-          setError('Failed to open video player.');
-        }
-      }
-    } catch (err: any) {
-      console.error('[VideoPlayerModal] Error opening native player:', err);
-      setError('Failed to open video. Please try again.');
-    }
-  };
-
-  const handleClose = () => {
+  const resetState = useCallback(() => {
+    setPaused(false);
+    setMuted(false);
     setLoading(true);
     setError(null);
-    cleanupTempFile();
+    setDuration(0);
+    setCurrentTime(0);
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+  }, []);
+
+  const handleClose = () => {
+    resetState();
     onClose();
+  };
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const progressWidth =
+    duration > 0 ? Math.min((currentTime / duration) * 100, 100) : 0;
+
+  const handleVideoPress = () => {
+    setShowControls(prev => {
+      if (!prev) {
+        // Show then auto-hide after 3s
+        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+      }
+      return !prev;
+    });
+  };
+
+  const handlePlayPause = () => {
+    setPaused(p => !p);
+    // Reset auto-hide timer
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+  };
+
+  const handleSeek = (e: any) => {
+    const { locationX } = e.nativeEvent;
+    const seekRatio = Math.max(0, Math.min(locationX / (SCREEN_WIDTH - 48), 1));
+    const seekTime = seekRatio * duration;
+    videoRef.current?.seek(seekTime);
+    setCurrentTime(seekTime);
   };
 
   return (
     <Modal
       visible={visible}
       animationType="fade"
-      transparent={true}
+      transparent={false}
       onRequestClose={handleClose}
-      statusBarTranslucent>
-      <View style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerContent}>
-            <MaterialCommunityIcons name="video" size={20} color="#a6c455" />
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {videoName || 'Video'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={styles.closeButton}
-            onPress={handleClose}
-            activeOpacity={0.7}>
-            <MaterialCommunityIcons name="close" size={24} color="#ffffff" />
-          </TouchableOpacity>
-        </View>
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape']}>
+      <View style={styles.root}>
+        <StatusBar hidden />
 
-        {/* Content */}
-        <View style={styles.contentContainer}>
-          {error ? (
-            <View style={styles.errorContainer}>
-              <MaterialCommunityIcons
-                name="alert-circle"
-                size={64}
-                color="#d97070"
-              />
-              <Text style={styles.errorText}>{error}</Text>
-              <TouchableOpacity
-                style={styles.retryButton}
-                onPress={downloadAndPlayVideo}>
-                <Text style={styles.retryButtonText}>RETRY</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.closeButtonBottom}
-                onPress={handleClose}>
-                <Text style={styles.closeButtonText}>CLOSE</Text>
-              </TouchableOpacity>
-            </View>
-          ) : loading ? (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#a6c455" />
-              <Text style={styles.loadingText}>
-                {downloadProgress > 0
-                  ? `DOWNLOADING... ${downloadProgress}%`
-                  : 'PREPARING VIDEO...'}
+        {/* Video */}
+        {videoUrl ? (
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.videoWrapper}
+            onPress={handleVideoPress}>
+            <Video
+              ref={videoRef}
+              source={{ uri: videoUrl }}
+              style={styles.video}
+              resizeMode="contain"
+              paused={paused}
+              muted={muted}
+              repeat={false}
+              onLoad={data => {
+                setDuration(data.duration);
+                setLoading(false);
+              }}
+              onProgress={data => setCurrentTime(data.currentTime)}
+              onEnd={() => setPaused(true)}
+              onError={err => {
+                console.error('[VideoPlayerModal] Video error:', err);
+                setError('Failed to play video. The file may be corrupted or unsupported.');
+                setLoading(false);
+              }}
+            />
+
+            {/* Loading spinner */}
+            {loading && !error && (
+              <View style={styles.overlay}>
+                <ActivityIndicator size="large" color="#a6c455" />
+                <Text style={styles.loadingText}>LOADING VIDEO...</Text>
+              </View>
+            )}
+
+            {/* Error state */}
+            {error && (
+              <View style={styles.overlay}>
+                <MaterialCommunityIcons name="alert-circle" size={64} color="#d97070" />
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        ) : null}
+
+        {/* Controls overlay */}
+        {showControls && !loading && !error && (
+          <View style={styles.controlsContainer} pointerEvents="box-none">
+            {/* Top bar */}
+            <View style={styles.topBar}>
+              <MaterialCommunityIcons name="video" size={18} color="#a6c455" />
+              <Text style={styles.videoTitle} numberOfLines={1}>
+                {videoName || 'Video'}
               </Text>
+              <TouchableOpacity onPress={handleClose} style={styles.iconBtn}>
+                <MaterialCommunityIcons name="close" size={26} color="#fff" />
+              </TouchableOpacity>
             </View>
-          ) : (
-            <View style={styles.readyContainer}>
-              <MaterialCommunityIcons
-                name="play-circle"
-                size={80}
-                color="#a6c455"
-              />
-              <Text style={styles.readyText}>VIDEO READY</Text>
-              <Text style={styles.readySubtext}>
-                Opened in your device's video player
+
+            {/* Bottom bar */}
+            <View style={styles.bottomBar}>
+              {/* Play/Pause */}
+              <TouchableOpacity onPress={handlePlayPause} style={styles.iconBtn}>
+                <MaterialCommunityIcons
+                  name={paused ? 'play-circle' : 'pause-circle'}
+                  size={40}
+                  color="#a6c455"
+                />
+              </TouchableOpacity>
+
+              {/* Seek bar */}
+              <TouchableOpacity
+                activeOpacity={1}
+                style={styles.seekBarContainer}
+                onPress={handleSeek}>
+                <View style={styles.seekBarBg}>
+                  <View style={[styles.seekBarFill, { width: `${progressWidth}%` }]} />
+                </View>
+              </TouchableOpacity>
+
+              {/* Time */}
+              <Text style={styles.timeText}>
+                {formatTime(currentTime)} / {formatTime(duration)}
               </Text>
-              <TouchableOpacity
-                style={styles.playAgainButton}
-                onPress={() => tempFileRef.current && openWithNativePlayer(tempFileRef.current)}>
-                <MaterialCommunityIcons name="play" size={20} color="#ffffff" />
-                <Text style={styles.playAgainText}>PLAY AGAIN</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.closeButtonBottom}
-                onPress={handleClose}>
-                <Text style={styles.closeButtonText}>CLOSE</Text>
+
+              {/* Mute */}
+              <TouchableOpacity onPress={() => setMuted(m => !m)} style={styles.iconBtn}>
+                <MaterialCommunityIcons
+                  name={muted ? 'volume-off' : 'volume-high'}
+                  size={22}
+                  color="#fff"
+                />
               </TouchableOpacity>
             </View>
-          )}
-        </View>
+          </View>
+        )}
+
+        {/* Fallback close button when controls hidden */}
+        {!showControls && (
+          <TouchableOpacity style={styles.hiddenClose} onPress={handleVideoPress} />
+        )}
+
+        {/* Close button when loading or error */}
+        {(loading || error) && (
+          <TouchableOpacity style={styles.loadingClose} onPress={handleClose}>
+            <MaterialCommunityIcons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+        )}
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    backgroundColor: '#000',
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 12 : 12,
-    backgroundColor: '#1a1a1a',
-    borderBottomWidth: 2,
-    borderBottomColor: '#4d5d30',
-  },
-  headerContent: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  headerTitle: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-    flex: 1,
-  },
-  closeButton: {
-    padding: 4,
-  },
-  contentContainer: {
+  videoWrapper: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingOverlay: {
+  video: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    gap: 12,
   },
   loadingText: {
     color: '#a6c455',
     fontSize: 12,
-    marginTop: 12,
-    letterSpacing: 1,
-    fontWeight: '600',
-  },
-  errorContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
+    letterSpacing: 1.5,
+    fontWeight: '700',
   },
   errorText: {
     color: '#d97070',
-    fontSize: 14,
-    marginTop: 16,
-    marginBottom: 24,
+    fontSize: 13,
+    letterSpacing: 0.5,
+    fontWeight: '600',
     textAlign: 'center',
-    letterSpacing: 0.5,
-    fontWeight: 'bold',
-  },
-  retryButton: {
-    backgroundColor: '#4d5d30',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: '#5a6b38',
-    marginBottom: 12,
-  },
-  retryButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-  },
-  closeButtonBottom: {
-    backgroundColor: '#333',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: '#555',
+    paddingHorizontal: 32,
     marginTop: 8,
   },
-  closeButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 1,
+  controlsContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'space-between',
   },
-  readyContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
-  },
-  readyText: {
-    color: '#a6c455',
-    fontSize: 16,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-    marginTop: 16,
-  },
-  readySubtext: {
-    color: '#888',
-    fontSize: 12,
-    marginTop: 8,
-    letterSpacing: 0.5,
-  },
-  playAgainButton: {
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#4d5d30',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: '#5a6b38',
-    marginTop: 24,
+    paddingHorizontal: 16,
+    paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 8 : 16,
+    paddingBottom: 12,
     gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
-  playAgainText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 1,
+  videoTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  bottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 24,
+    paddingTop: 12,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  iconBtn: {
+    padding: 4,
+  },
+  seekBarContainer: {
+    flex: 1,
+    paddingVertical: 10,
+  },
+  seekBarBg: {
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  seekBarFill: {
+    height: '100%',
+    backgroundColor: '#a6c455',
+    borderRadius: 2,
+  },
+  timeText: {
+    color: '#ccc',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    minWidth: 80,
+    textAlign: 'right',
+  },
+  hiddenClose: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  loadingClose: {
+    position: 'absolute',
+    top: StatusBar.currentHeight ? StatusBar.currentHeight + 8 : 16,
+    right: 16,
+    padding: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 20,
   },
 });

@@ -35,7 +35,13 @@ export type WebSocketMessage = {
   | 'call_rejected'
   | 'call_failed'
   | 'reject_call'
-  | 'reject_group_call';
+  | 'reject_group_call'
+  | 'group_call_initiated'
+  | 'force_webrtc_reconnect'
+  | 'pong'
+  | 'group_call_user_left'
+  | 'message_deleted'
+  | 'webrtc_ready';
   payload: any;
 };
 

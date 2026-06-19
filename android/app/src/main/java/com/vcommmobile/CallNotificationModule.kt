@@ -120,6 +120,25 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun cancelCallNotification(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val notificationManager = NotificationManagerCompat.from(context)
+            notificationManager.cancel(NOTIFICATION_ID)
+            
+            // Also send broadcast to close IncomingCallActivity
+            val closeIntent = Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY")
+            context.sendBroadcast(closeIntent)
+            
+            Log.d(TAG, "Notification canceled and close broadcast sent")
+            promise.resolve(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error canceling notification: ${e.message}")
+            promise.reject("ERROR", e.message)
+        }
+    }
+
     fun showIncomingCallNotificationInternal(
         callId: String,
         callerId: String,

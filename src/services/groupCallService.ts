@@ -12,7 +12,7 @@ import { useCallStore, CallType } from '../store/callStore';
 import { useAuthStore } from '../store/authStore';
 import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
 import {
-  ICE_SERVERS,
+  getIceServers,
   getMediaConstraints,
   getInCallManagerOptions,
   AUDIO_HEALTH_CHECK_INTERVAL,
@@ -48,7 +48,8 @@ export class GroupCallService {
       console.log('[WebRTC Group] Created new MediaStream for participant:', participantUserId);
     }
 
-    const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+    const iceServers = await getIceServers();
+    const peerConnection = new RTCPeerConnection(iceServers as any);
 
     // Add transceivers upfront to ensure consistent SDP structure across all connections
     // This prevents issues where different peer connections might have different m-line orders
@@ -343,7 +344,7 @@ export class GroupCallService {
       // Find audio transceiver (by media kind with index fallback)
       const audioTransceiver = transceivers.find((t: any) => {
         return t.sender?.track?.kind === 'audio' ||
-               t.receiver?.track?.kind === 'audio';
+          t.receiver?.track?.kind === 'audio';
       }) || transceivers[0]; // Fallback to first transceiver (audio by convention)
 
       if (audioTransceiver && localStream.getAudioTracks().length > 0) {
@@ -361,7 +362,7 @@ export class GroupCallService {
       // Find video transceiver (by media kind with index fallback)
       const videoTransceiver = transceivers.find((t: any) => {
         return t.sender?.track?.kind === 'video' ||
-               t.receiver?.track?.kind === 'video';
+          t.receiver?.track?.kind === 'video';
       }) || transceivers[1]; // Fallback to second transceiver (video by convention)
 
       if (videoTransceiver && localStream.getVideoTracks().length > 0) {
@@ -400,6 +401,8 @@ export class GroupCallService {
 
       // Set audio bitrate constraints (#5)
       this.applyAudioBitrateConstraints(peerConnection);
+      // Boost video bitrate to prevent blurriness on low-end devices
+      this.applyVideoBitrateConstraints(peerConnection);
 
       const callState = useCallStore.getState();
       const user = useAuthStore.getState().user;
@@ -474,7 +477,8 @@ export class GroupCallService {
         this.participantStreams.set(fromUserId, new MediaStream());
       }
 
-      const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+      const iceServers = await getIceServers();
+      const peerConnection = new RTCPeerConnection(iceServers as any);
 
       // Set up event handlers (same as initializeGroupPeerConnection but no addTransceiver)
       (peerConnection as any).onicecandidate = (event: any) => {
@@ -572,6 +576,8 @@ export class GroupCallService {
 
       // Set audio bitrate constraints (#5)
       this.applyAudioBitrateConstraints(peerConnection);
+      // Boost video bitrate to prevent blurriness on low-end devices
+      this.applyVideoBitrateConstraints(peerConnection);
 
       const callState = useCallStore.getState();
 
@@ -739,6 +745,27 @@ export class GroupCallService {
       }
     } catch (error) {
       console.error('[WebRTC Group] Error setting audio bitrate:', error);
+    }
+  }
+
+  // Boost video sender bitrate to prevent blurriness on low-end devices
+  private async applyVideoBitrateConstraints(peerConnection: any): Promise<void> {
+    try {
+      const senders = peerConnection.getSenders();
+      for (const sender of senders) {
+        if (sender.track?.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps for clear 720p
+          params.encodings[0].maxFramerate = 30;
+          await sender.setParameters(params);
+          console.log('[WebRTC Group] \u2705 Video bitrate boosted to 1.5 Mbps');
+        }
+      }
+    } catch (error) {
+      console.warn('[WebRTC Group] Could not boost video bitrate:', error);
     }
   }
 

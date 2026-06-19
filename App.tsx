@@ -3,6 +3,7 @@ import {AppState, Platform} from 'react-native';
 import {AppNavigator} from './src/navigation/AppNavigator';
 import {websocketService} from './src/services/websocket';
 import {callNotificationService} from './src/services/callNotificationService';
+import {initSiteConfigListener} from './src/services/siteConfigService';
 import {Toast} from './src/components/Toast';
 
 function App(): React.JSX.Element {
@@ -18,6 +19,11 @@ function App(): React.JSX.Element {
       // Cleanup on unmount (app termination)
       callNotificationService.destroy();
     };
+  }, []);
+
+  // Apply site settings handed over by the Portal app (intent extras)
+  useEffect(() => {
+    return initSiteConfigListener();
   }, []);
 
   useEffect(() => {

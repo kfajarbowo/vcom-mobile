@@ -63,6 +63,7 @@ export function CallManager() {
           }
         } else if (event.action === 'reject') {
           console.log('[CallManager] Rejecting call from notification');
+          callNotificationService.cancelCallNotification();
           if (callStore.isGroupCall) {
             webrtcService.endGroupCall();
           } else {
@@ -70,6 +71,7 @@ export function CallManager() {
           }
         } else if (event.action === 'missed') {
           console.log('[CallManager] Call missed (timeout)');
+          callNotificationService.cancelCallNotification();
           if (callStore.status === 'ringing') {
             callStore.endCall();
           }
@@ -152,26 +154,24 @@ export function CallManager() {
               if (pendingOffer) {
                 console.log('[CallManager] ✅ Call ready with buffered offer!');
 
-                // Show notification if app is in background (same logic as webrtc_offer handler)
-                if (AppState.currentState !== 'active') {
-                  console.log('[CallManager] App in background, showing native notification for buffered offer');
-                  callNotificationService.showIncomingCallNotification({
-                    callId,
-                    callerId: String(fromUserId),
-                    callerName: fromUserName || 'Unknown',
-                    callType: callType || 'audio',
-                    isGroupCall: false,
-                  });
+                // Always show native notification for incoming calls to mimic background behavior as requested
+                console.log('[CallManager] Showing native notification for incoming call (buffered offer case)');
+                callNotificationService.showIncomingCallNotification({
+                  callId,
+                  callerId: String(fromUserId),
+                  callerName: fromUserName || 'Unknown',
+                  callType: callType || 'audio',
+                  isGroupCall: false,
+                });
 
-                  // Set timeout to auto-reset if notification not answered (35 seconds)
-                  setTimeout(() => {
-                    const currentState = useCallStore.getState();
-                    if (currentState.callId === callId && currentState.status === 'ringing') {
-                      console.log('[CallManager] ⏱️ Notification timed out (buffered offer case), resetting call state');
-                      callStore.reset();
-                    }
-                  }, 35000);
-                }
+                // Set timeout to auto-reset if notification not answered (35 seconds)
+                setTimeout(() => {
+                  const currentState = useCallStore.getState();
+                  if (currentState.callId === callId && currentState.status === 'ringing') {
+                    console.log('[CallManager] ⏱️ Notification timed out (buffered offer case), resetting call state');
+                    callStore.reset();
+                  }
+                }, 35000);
               } else {
                 console.log('[CallManager] ✅ Call metadata stored, waiting for offer');
               }
@@ -231,27 +231,24 @@ export function CallManager() {
               console.log('[CallManager] ✅ Offer added, call ready for user response');
               console.log('[CallManager] Has offer in store after setOffer:', !!useCallStore.getState().offer);
 
-              // Show native notification if app is in background
-              if (AppState.currentState !== 'active') {
-                console.log('[CallManager] App in background, showing native notification');
-                callNotificationService.showIncomingCallNotification({
-                  callId,
-                  callerId: String(callStore.callerUserId),
-                  callerName: callStore.callerName || 'Unknown',
-                  callType: callType || 'audio',
-                  isGroupCall: false,
-                });
+              // Always show native notification for incoming calls to mimic background behavior as requested
+              console.log('[CallManager] Showing native notification for incoming call (standard offer case)');
+              callNotificationService.showIncomingCallNotification({
+                callId,
+                callerId: String(callStore.callerUserId),
+                callerName: callStore.callerName || 'Unknown',
+                callType: callType || 'audio',
+                isGroupCall: false,
+              });
 
-                // Set timeout to auto-reset if notification not answered (35 seconds)
-                // This fixes the issue where second background calls fail because state wasn't reset
-                setTimeout(() => {
-                  const currentState = useCallStore.getState();
-                  if (currentState.callId === callId && currentState.status === 'ringing') {
-                    console.log('[CallManager] ⏱️ Notification timed out, resetting call state');
-                    callStore.reset();
-                  }
-                }, 35000); // 35 seconds (Android notification timeout is 30s)
-              }
+              // Set timeout to auto-reset if notification not answered (35 seconds)
+              setTimeout(() => {
+                const currentState = useCallStore.getState();
+                if (currentState.callId === callId && currentState.status === 'ringing') {
+                  console.log('[CallManager] ⏱️ Notification timed out, resetting call state');
+                  callStore.reset();
+                }
+              }, 35000); // 35 seconds (Android notification timeout is 30s)
             } else if (callStore.status === 'idle') {
               // webrtc_offer arrived before incoming_call
               // Buffer it and let incoming_call set up the call state to avoid race condition
@@ -317,6 +314,7 @@ export function CallManager() {
           case 'end_call':
           case 'call_ended': {
             console.log('[CallManager] Call ended by remote peer');
+            callNotificationService.cancelCallNotification();
             if (callStore.isGroupCall) {
               webrtcService.endGroupCall();
             } else {
@@ -327,6 +325,7 @@ export function CallManager() {
 
           case 'call_rejected': {
             console.log('[CallManager] Call rejected by remote peer');
+            callNotificationService.cancelCallNotification();
             toast.show('Call was declined', 'info');
             if (callStore.isGroupCall) {
               webrtcService.endGroupCall();
@@ -338,6 +337,7 @@ export function CallManager() {
 
           case 'call_failed': {
             console.log('[CallManager] Call failed');
+            callNotificationService.cancelCallNotification();
             const payload = message.payload || message;
             const { reason, message: errorMessage } = payload as any;
 
@@ -435,17 +435,15 @@ export function CallManager() {
                 userName: fromUserName || `User ${fromUserId}`
               }]);
 
-              // Show native notification if app is in background
-              if (AppState.currentState !== 'active') {
-                console.log('[CallManager] App in background, showing native notification for group call');
-                callNotificationService.showIncomingCallNotification({
-                  callId,
-                  callerId: String(fromUserId),
-                  callerName: groupName || 'Group Call',
-                  callType: callType || 'audio',
-                  isGroupCall: true,
-                });
-              }
+              // Always show native notification for incoming calls to mimic background behavior as requested
+              console.log('[CallManager] Showing native notification for group call');
+              callNotificationService.showIncomingCallNotification({
+                callId,
+                callerId: String(fromUserId),
+                callerName: groupName || 'Group Call',
+                callType: callType || 'audio',
+                isGroupCall: true,
+              });
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
 
@@ -687,6 +685,7 @@ export function CallManager() {
             const missedPayload = message.payload || message;
             const { reason, fromUserName } = missedPayload as any;
             console.log('[CallManager] Call missed:', reason, fromUserName);
+            callNotificationService.cancelCallNotification();
 
             if (reason === 'offline' && fromUserName) {
               // Missed call notification delivered on reconnect

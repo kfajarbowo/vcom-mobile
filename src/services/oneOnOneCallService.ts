@@ -11,7 +11,7 @@ import { websocketService } from './websocket';
 import { useCallStore, CallType } from '../store/callStore';
 import { useAuthStore } from '../store/authStore';
 import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
-import { ICE_SERVERS, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
+import { getIceServers, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
 
 /**
  * OneOnOneCallService
@@ -61,7 +61,8 @@ export class OneOnOneCallService {
     this.pendingIceCandidates = [];
     console.log('[WebRTC 1:1] Cleared pending ICE candidates');
 
-    this.peerConnection = new RTCPeerConnection(ICE_SERVERS);
+    const iceServers = await getIceServers();
+    this.peerConnection = new RTCPeerConnection(iceServers as any);
     console.log('[WebRTC 1:1] Created fresh peer connection');
 
     // Handle ICE candidates
@@ -195,6 +196,18 @@ export class OneOnOneCallService {
         });
       });
 
+      // Log video track details including actual resolution selected by the camera
+      stream.getVideoTracks().forEach((track, index) => {
+        const settings = (track as any).getSettings ? (track as any).getSettings() : {};
+        console.log(`[WebRTC 1:1] Video track ${index}:`, {
+          id: track.id,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+        });
+        console.log(`[WebRTC 1:1] Video track ${index} settings:`, JSON.stringify(settings));
+      });
+
       useCallStore.getState().setLocalStream(stream);
       return stream;
     } catch (error) {
@@ -252,6 +265,9 @@ export class OneOnOneCallService {
         console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
+
+      // Boost video bitrate to prevent blurriness on low-end devices
+      await this.boostVideoBitrate();
 
       // Create offer — always receive video for unified call UI
       const offer = await this.peerConnection!.createOffer({
@@ -367,6 +383,9 @@ export class OneOnOneCallService {
         this.peerConnection?.addTrack(track, stream);
       });
 
+      // Boost video bitrate to prevent blurriness on low-end devices
+      await this.boostVideoBitrate();
+
       // Set remote description (offer)
       await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
 
@@ -449,6 +468,31 @@ export class OneOnOneCallService {
       }
     } catch (error) {
       console.error('[WebRTC 1:1] Error handling ICE candidate:', error);
+    }
+  }
+
+  // Boost video sender bitrate to prevent blurriness
+  // WebRTC defaults to very low bitrate on some devices (especially MediaTek),
+  // causing the video to look blurry even at 720p capture resolution.
+  private async boostVideoBitrate(): Promise<void> {
+    try {
+      if (!this.peerConnection) return;
+
+      const senders = this.peerConnection.getSenders();
+      for (const sender of senders) {
+        if (sender.track?.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps for clear 720p
+          params.encodings[0].maxFramerate = 30;
+          await sender.setParameters(params);
+          console.log('[WebRTC 1:1] ✅ Video bitrate boosted to 1.5 Mbps');
+        }
+      }
+    } catch (error) {
+      console.warn('[WebRTC 1:1] Could not boost video bitrate:', error);
     }
   }
 
