@@ -1,78 +1,170 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  validateLicenseKey as validateLicenseCrypto,
-  formatDate,
-  LicenseConfig,
-  type LicenseValidationResult,
-} from '../utils/licenseCrypto';
+import { STORAGE_KEYS } from './apiClient';
 import { getDeviceHardwareId } from '../utils/deviceInfo';
 
 const LICENSE_STORAGE_KEY = 'vcomm_license_key';
 
+// License server defaults (separate from main app server)
+const DEFAULT_LICENSE_HOST = '';
+const DEFAULT_LICENSE_PORT = '';
+
 /**
- * Validate license key format (basic check)
- * @param key - License key to validate
- * @returns true if valid format, false otherwise
+ * Get license server base URL
  */
-export const validateLicenseFormat = (key: string): boolean => {
-  if (!key || typeof key !== 'string') {
-    return false;
+export const getLicenseServerUrl = async (): Promise<string> => {
+  const protocol = 'http';
+  let host = 'blm.id';
+  let port = '3001';
+
+  try {
+    const storedHost = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_HOST);
+    const storedPort = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_PORT);
+
+    if (storedHost) host = storedHost;
+    if (storedPort) port = storedPort;
+  } catch (error) {
+    console.error('[License] Error reading license server config from storage:', error);
   }
 
-  // Remove whitespace
-  const cleanKey = key.trim();
-
-  // Check format: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX (6 segments of 4 chars)
-  const segments = cleanKey.split('-');
-  if (segments.length !== LicenseConfig.KEY_SEGMENTS) {
-    return false;
-  }
-
-  // Check each segment
-  for (const seg of segments) {
-    if (seg.length !== LicenseConfig.SEGMENT_LENGTH) {
-      return false;
-    }
-    // Check alphanumeric only
-    if (!/^[A-Za-z0-9]+$/.test(seg)) {
-      return false;
-    }
-  }
-
-  return true;
+  console.log(`[License] Using license server: ${protocol}://${host}:${port}`);
+  return `${protocol}://${host}:${port}`;
 };
 
 /**
- * Hash license key before storage
- * TODO: Implement proper hashing algorithm
- * Suggestions: SHA-256, bcrypt, or custom algorithm
- *
- * Example implementation with crypto-js:
- * ```
- * import CryptoJS from 'crypto-js';
- * return CryptoJS.SHA256(key).toString();
- * ```
- *
- * @param key - Raw license key
- * @returns Hashed license key (currently returns unhashed)
+ * Set license server configuration
  */
-export const hashLicenseKey = (key: string): string => {
-  // PLACEHOLDER - User will implement hashing here
-  console.warn('[License] Using unhashed license key - implement hashing for production');
+export const setLicenseServer = async (host: string, port: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_HOST, host);
+    await AsyncStorage.setItem(STORAGE_KEYS.LICENSE_SERVER_PORT, port);
+    console.log('[License] License server config saved');
+  } catch (error) {
+    console.error('[License] Error saving license server config:', error);
+  }
+};
 
-  // For now, just normalize to uppercase
-  return key.trim().toUpperCase();
+export interface LicenseCheckResult {
+  valid: boolean;
+  status: 'AVAILABLE' | 'ALREADY_ACTIVATED' | 'INVALID' | 'ERROR';
+  productCode?: string;
+  productName?: string;
+  activatedBy?: string;
+  usedAt?: string;
+  message?: string;
+  error?: string;
+}
+
+export interface LicenseActivationResult {
+  success: boolean;
+  productCode?: string;
+  testHardwareId?: string;
+  error?: string;
+}
+
+/**
+ * Check license key status on server
+ */
+export const checkLicenseOnServer = async (licenseKey: string): Promise<LicenseCheckResult> => {
+  try {
+    const baseUrl = await getLicenseServerUrl();
+    console.log('[License] Checking key on server:', baseUrl);
+
+    const res = await fetch(`${baseUrl}/api/license/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseKey }),
+    });
+    const data = await res.json();
+
+    if (data.valid && data.status === 'AVAILABLE') {
+      return {
+        valid: true,
+        status: 'AVAILABLE',
+        productCode: data.productCode,
+        productName: data.productName,
+      };
+    } else if (data.valid && data.status === 'ALREADY_ACTIVATED') {
+      return {
+        valid: true,
+        status: 'ALREADY_ACTIVATED',
+        productCode: data.productCode,
+        activatedBy: data.activatedBy,
+        usedAt: data.usedAt,
+      };
+    } else {
+      return {
+        valid: false,
+        status: data.status || 'INVALID',
+        message: data.message || data.error,
+        error: data.message || data.error,
+      };
+    }
+  } catch (err: any) {
+    console.error('[License] Server check error:', err);
+    return {
+      valid: false,
+      status: 'ERROR',
+      error: `Cannot connect to server: ${err.message}`,
+    };
+  }
+};
+
+/**
+ * Activate (mark as used) a license key on server
+ */
+export const activateLicenseOnServer = async (licenseKey: string): Promise<LicenseActivationResult> => {
+  try {
+    const baseUrl = await getLicenseServerUrl();
+    console.log('[License] Activating key on server:', baseUrl);
+
+    const hardwareId = await getDeviceHardwareId();
+    let deviceName = 'VCOMM-Mobile';
+    try {
+      const DeviceInfo = require('react-native-device-info');
+      deviceName = await DeviceInfo.getDeviceName();
+    } catch (e) {
+      console.warn('[License] react-native-device-info not available for deviceName');
+    }
+
+    const res = await fetch(`${baseUrl}/api/license/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        licenseKey,
+        hardwareId,
+        deviceName
+      }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      return {
+        success: true,
+        productCode: data.productCode,
+        testHardwareId: data.testHardwareId,
+      };
+    } else {
+      return {
+        success: false,
+        error: data.error || 'Activation failed',
+      };
+    }
+  } catch (err: any) {
+    console.error('[License] Server activation error:', err);
+    return {
+      success: false,
+      error: `Cannot connect to server: ${err.message}`,
+    };
+  }
 };
 
 /**
  * Save license key to AsyncStorage
- * @param key - License key to save
  */
 export const saveLicenseKey = async (key: string): Promise<void> => {
   try {
-    // Hash the key before storing (currently just normalizes)
-    const hashedKey = hashLicenseKey(key);
-    await AsyncStorage.setItem(LICENSE_STORAGE_KEY, hashedKey);
+    const normalizedKey = key.trim().toUpperCase();
+    await AsyncStorage.setItem(LICENSE_STORAGE_KEY, normalizedKey);
     console.log('[License] License key saved successfully');
   } catch (error) {
     console.error('[License] Failed to save license key:', error);
@@ -82,7 +174,6 @@ export const saveLicenseKey = async (key: string): Promise<void> => {
 
 /**
  * Retrieve license key from AsyncStorage
- * @returns License key or null if not set
  */
 export const getLicenseKey = async (): Promise<string | null> => {
   try {
@@ -96,7 +187,6 @@ export const getLicenseKey = async (): Promise<string | null> => {
 
 /**
  * Check if license key is set
- * @returns true if license exists, false otherwise
  */
 export const isLicenseSet = async (): Promise<boolean> => {
   try {
@@ -109,55 +199,8 @@ export const isLicenseSet = async (): Promise<boolean> => {
 };
 
 /**
- * Verify license key with full cryptographic validation
- *
- * @param inputKey - License key to verify
- * @returns Promise with validation result
- */
-export const verifyLicenseKey = async (
-  inputKey: string
-): Promise<LicenseValidationResult> => {
-  try {
-    // First validate basic format
-    if (!validateLicenseFormat(inputKey)) {
-      return {
-        valid: false,
-        expiryDate: null,
-        hardwareId: null,
-        error: 'Format license key tidak valid',
-      };
-    }
-
-    // Get device hardware ID
-    const deviceHardwareId = await getDeviceHardwareId();
-    console.log('[License] Device Hardware ID:', deviceHardwareId.substring(0, 8));
-
-    // Validate license key with crypto validation
-    const validation = validateLicenseCrypto(inputKey, deviceHardwareId);
-
-    if (validation.valid) {
-      console.log('[License] License validation SUCCESS');
-      console.log('[License] Expiry date:', formatDate(validation.expiryDate!));
-      console.log('[License] Hardware match:', validation.hardwareMatch);
-    } else {
-      console.log('[License] License validation FAILED:', validation.error);
-    }
-
-    return validation;
-  } catch (error) {
-    console.error('[License] License verification error:', error);
-    return {
-      valid: false,
-      expiryDate: null,
-      hardwareId: null,
-      error: 'Terjadi kesalahan saat memverifikasi license',
-    };
-  }
-};
-
-/**
- * Verify stored license key
- * @returns true if stored license is valid, false otherwise
+ * Verify stored license - checks if a key exists locally
+ * (Key was already validated with server during activation)
  */
 export const verifyStoredLicense = async (): Promise<boolean> => {
   try {
@@ -166,9 +209,8 @@ export const verifyStoredLicense = async (): Promise<boolean> => {
       console.log('[License] No stored license key found');
       return false;
     }
-
-    const validation = await verifyLicenseKey(storedKey);
-    return validation.valid;
+    console.log('[License] Found stored license key');
+    return true;
   } catch (error) {
     console.error('[License] Stored license verification error:', error);
     return false;
@@ -178,7 +220,6 @@ export const verifyStoredLicense = async (): Promise<boolean> => {
 /**
  * Clear license key from storage
  * WARNING: This will require re-activation
- * Only use for testing/debugging
  */
 export const clearLicenseKey = async (): Promise<void> => {
   try {
@@ -192,6 +233,3 @@ export const clearLicenseKey = async (): Promise<void> => {
 
 // Re-export device info utilities
 export { getDeviceHardwareId, getDeviceInfo, formatHardwareId } from '../utils/deviceInfo';
-
-// Re-export license validation types
-export type { LicenseValidationResult } from '../utils/licenseCrypto';

@@ -1,0 +1,148 @@
+﻿> Task :gradle-plugin:settings-plugin:checkKotlinGradlePluginConfigurationErrors
+> Task :gradle-plugin:shared:checkKotlinGradlePluginConfigurationErrors
+> Task :gradle-plugin:shared:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:shared:compileJava NO-SOURCE
+> Task :gradle-plugin:shared:processResources NO-SOURCE
+> Task :gradle-plugin:shared:classes UP-TO-DATE
+> Task :gradle-plugin:shared:jar UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:settings-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:jar UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:checkKotlinGradlePluginConfigurationErrors
+> Task :gradle-plugin:react-native-gradle-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:react-native-gradle-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:jar UP-TO-DATE
+
+> Configure project :notifee_react-native
+:notifee_react-native @notifee/react-native found at C:\Users\LOQ\Documents\vcomm\VCOMM-Moblie\node_modules\@notifee\react-native
+:notifee_react-native package.json found at C:\Users\LOQ\Documents\vcomm\VCOMM-Moblie\node_modules\@notifee\react-native\package.json
+:notifee_react-native:version set from package.json: 7.9.0 (7,9,0 - 7009000)
+:notifee_react-native:android.compileSdk using custom value: 35
+:notifee_react-native:android.targetSdk using custom value: 34
+:notifee_react-native:android.minSdk using custom value: 24
+:notifee_react-native:reactNativeAndroidDir C:\Users\LOQ\Documents\vcomm\VCOMM-Moblie\node_modules\react-native\android
+WARNING: The specified Android SDK Build Tools version (33.0.0) is ignored, as it is below the minimum supported version (34.0.0) for Android Gradle Plugin 8.6.0.
+Android SDK Build Tools 34.0.0 will be used.
+To suppress this warning, remove "buildToolsVersion '33.0.0'" from your build.gradle file, as each version of the Android Gradle Plugin now has a default version of the build tools.
+
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:generateAutolinkingPackageList UP-TO-DATE
+> Task :app:generateCodegenSchemaFromJavaScript SKIPPED
+> Task :app:generateCodegenArtifactsFromSchema SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preReleaseBuild UP-TO-DATE
+> Task :app:generateReleaseBuildConfig UP-TO-DATE
+> Task :notifee_react-native:preBuild UP-TO-DATE
+> Task :notifee_react-native:preReleaseBuild UP-TO-DATE
+> Task :notifee_react-native:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-async-storage_async-storage:preBuild UP-TO-DATE
+> Task :react-native-async-storage_async-storage:preReleaseBuild UP-TO-DATE
+> Task :react-native-async-storage_async-storage:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-audio-recorder-player:preBuild UP-TO-DATE
+> Task :react-native-audio-recorder-player:preReleaseBuild UP-TO-DATE
+> Task :react-native-audio-recorder-player:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-community_netinfo:preBuild UP-TO-DATE
+> Task :react-native-community_netinfo:preReleaseBuild UP-TO-DATE
+> Task :react-native-community_netinfo:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-device-info:preBuild UP-TO-DATE
+> Task :react-native-device-info:preReleaseBuild UP-TO-DATE
+> Task :react-native-device-info:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-document-picker:preBuild UP-TO-DATE
+> Task :react-native-document-picker:preReleaseBuild UP-TO-DATE
+> Task :react-native-document-picker:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-file-viewer:preBuild UP-TO-DATE
+> Task :react-native-file-viewer:preReleaseBuild UP-TO-DATE
+> Task :react-native-file-viewer:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-image-picker:preBuild UP-TO-DATE
+> Task :react-native-image-picker:preReleaseBuild UP-TO-DATE
+> Task :react-native-image-picker:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-incall-manager:preBuild UP-TO-DATE
+> Task :react-native-incall-manager:preReleaseBuild UP-TO-DATE
+> Task :react-native-incall-manager:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-permissions:preBuild UP-TO-DATE
+> Task :react-native-permissions:preReleaseBuild UP-TO-DATE
+> Task :react-native-permissions:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-picker_picker:preBuild UP-TO-DATE
+> Task :react-native-picker_picker:preReleaseBuild UP-TO-DATE
+> Task :react-native-picker_picker:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-safe-area-context:preBuild UP-TO-DATE
+> Task :react-native-safe-area-context:preReleaseBuild UP-TO-DATE
+> Task :react-native-safe-area-context:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-screens:preBuild UP-TO-DATE
+> Task :react-native-screens:preReleaseBuild UP-TO-DATE
+> Task :react-native-screens:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-vector-icons:preBuild UP-TO-DATE
+> Task :react-native-vector-icons:preReleaseBuild UP-TO-DATE
+> Task :react-native-vector-icons:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-webrtc:preBuild UP-TO-DATE
+> Task :react-native-webrtc:preReleaseBuild UP-TO-DATE
+> Task :react-native-webrtc:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-webview:preBuild UP-TO-DATE
+> Task :react-native-webview:preReleaseBuild UP-TO-DATE
+> Task :react-native-webview:writeReleaseAarMetadata UP-TO-DATE
+> Task :rn-fetch-blob:preBuild UP-TO-DATE
+> Task :rn-fetch-blob:preReleaseBuild UP-TO-DATE
+> Task :rn-fetch-blob:writeReleaseAarMetadata UP-TO-DATE
+> Task :app:checkReleaseAarMetadata FAILED
+
+[Incubating] Problems report is available at: file:///C:/Users/LOQ/Documents/vcomm/VCOMM-Moblie/android/build/reports/problems/problems-report.html
+.\gradlew : 
+At line:1 char:1
++ .\gradlew assembleRelease 
+> build_log_3.txt 2>&1; 
+Get-Content .\build ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          
+    : NotSpecified: (:Stri  
+  ng) [], RemoteException
+    + FullyQualifiedErrorId 
+    : NativeCommandError
+ 
+FAILURE: Build failed with 
+an exception.
+
+* What went wrong:
+Execution failed for task ':
+app:checkReleaseAarMetadata'
+.
+> A build operation failed.
+      Could not read 
+workspace metadata from C:\U
+sers\LOQ\.gradle\caches\8.12
+\transforms\8d51e8ea3a9031d8
+d7f50f1a21720847\metadata.bi
+n
+   > Could not read 
+workspace metadata from C:\U
+sers\LOQ\.gradle\caches\8.12
+\transforms\8d51e8ea3a9031d8
+d7f50f1a21720847\metadata.bi
+n
+
+* Try:
+> Run with --stacktrace 
+option to get the stack 
+trace.
+> Run with --info or 
+--debug option to get more 
+log output.
+> Run with --scan to get 
+full insights.
+> Get more help at 
+https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.12/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 6s
+34 actionable tasks: 5 executed, 29 up-to-date

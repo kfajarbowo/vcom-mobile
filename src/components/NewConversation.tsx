@@ -12,6 +12,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { apiRequest } from '../services/apiClient';
 import { useAuthStore } from '../store/authStore';
+import { websocketService } from '../services/websocket';
 
 interface User {
   id: number;
@@ -19,6 +20,7 @@ interface User {
   fullName?: string;
   rank?: string;
   branch?: string;
+  status?: string;
 }
 
 interface NewConversationProps {
@@ -41,6 +43,7 @@ export function NewConversation({
   const [isCreating, setIsCreating] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [showGroupNameInput, setShowGroupNameInput] = useState(false);
+  const [userStatuses, setUserStatuses] = useState<Map<number, string>>(new Map());
 
   useEffect(() => {
     if (visible) {
@@ -49,6 +52,21 @@ export function NewConversation({
       setSearchQuery('');
       setGroupName('');
       setShowGroupNameInput(false);
+
+      // Subscribe to live status updates while the modal is open
+      const unsubscribe = websocketService.addMessageHandler((message: any) => {
+        if (message.type === 'user_status') {
+          const uid = Number(message.payload.userId);
+          const status = message.payload.status;
+          setUserStatuses(prev => {
+            if (prev.get(uid) === status) return prev;
+            const next = new Map(prev);
+            next.set(uid, status);
+            return next;
+          });
+        }
+      });
+      return () => unsubscribe();
     }
   }, [visible]);
 
@@ -85,6 +103,12 @@ export function NewConversation({
       const filteredUsers = allUsers.filter((u: User) => u.id !== user?.id);
       setUsers(filteredUsers);
       setFilteredUsers(filteredUsers);
+      // Seed the status map from the API response
+      const statusMap = new Map<number, string>();
+      allUsers.forEach((u: any) => {
+        if (u.id && u.status) statusMap.set(Number(u.id), u.status);
+      });
+      setUserStatuses(statusMap);
     } catch (error) {
       console.error('Error loading users:', error);
     } finally {
@@ -165,15 +189,19 @@ export function NewConversation({
 
   const renderUserItem = ({ item }: { item: User }) => {
     const isSelected = selectedUsers.includes(item.id);
+    const isOnline = userStatuses.get(item.id) === 'online';
 
     return (
       <TouchableOpacity
         style={styles.userItem}
         onPress={() => toggleUserSelection(item.id)}>
-        <View style={[styles.avatar, isSelected && styles.avatarSelected]}>
-          <Text style={styles.avatarText}>
-            {item.callsign.substring(0, 2).toUpperCase()}
-          </Text>
+        <View style={styles.avatarWrapper}>
+          <View style={[styles.avatar, isSelected && styles.avatarSelected]}>
+            <Text style={styles.avatarText}>
+              {item.callsign.substring(0, 2).toUpperCase()}
+            </Text>
+          </View>
+          <View style={[styles.onlineDot, isOnline ? styles.onlineDotActive : styles.onlineDotInactive]} />
         </View>
 
         <View style={styles.userInfo}>
@@ -311,9 +339,9 @@ export function NewConversation({
               <ActivityIndicator size="small" color="#ffffff" />
             ) : (
               <MaterialCommunityIcons
-                name="arrow-right"
+                name="message-plus"
                 size={28}
-                color="#ffffff"
+                color="#a6c455"
               />
             )}
           </TouchableOpacity>
@@ -506,6 +534,10 @@ const styles = StyleSheet.create({
     borderBottomColor: '#2a2a2a',
     backgroundColor: '#1a1a1a',
   },
+  avatarWrapper: {
+    position: 'relative',
+    marginRight: 12,
+  },
   avatar: {
     width: 48,
     height: 48,
@@ -515,7 +547,22 @@ const styles = StyleSheet.create({
     borderColor: '#4d5d30',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+  },
+  onlineDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 13,
+    height: 13,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: '#1a1a1a',
+  },
+  onlineDotActive: {
+    backgroundColor: '#4ade80',
+  },
+  onlineDotInactive: {
+    backgroundColor: '#666',
   },
   avatarSelected: {
     backgroundColor: '#4d5d30',
@@ -584,7 +631,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#a6c455',
+    backgroundColor: '#4d5d30',
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 8,
@@ -593,7 +640,7 @@ const styles = StyleSheet.create({
       width: 0,
       height: 4,
     },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.5,
     shadowRadius: 8,
     borderWidth: 3,
     borderColor: '#5a6b38',

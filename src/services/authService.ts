@@ -1,14 +1,14 @@
 import {apiRequestWithHeaders, saveSessionToken} from './apiClient';
 
 export interface LoginCredentials {
-  callsign: string;
+  nrp: string;
   password: string;
 }
 
 export interface RegisterData {
   callsign: string;
   password: string;
-  nrp?: string;
+  nrp: string;
   fullName?: string;
   rank?: string;
   branch?: string;

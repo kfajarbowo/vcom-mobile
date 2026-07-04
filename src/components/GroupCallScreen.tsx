@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, Dimensions } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -10,22 +10,28 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export function GroupCallScreen() {
   const {
     status,
-    callType,
     groupName,
     localStream,
     isMuted,
     isVideoEnabled,
     isSpeakerEnabled,
+    isFrontCamera,
+    isGroupCall,
     toggleMute,
     toggleVideo,
     toggleSpeaker,
-    getAllParticipants,
+    switchCamera,
+    participants: participantsMap,
   } = useCallStore();
 
   const [callDuration, setCallDuration] = useState(0);
-  const participants = getAllParticipants();
 
-  const isVisible = status === 'calling' || status === 'active';
+  // Convert Map to array for rendering - this now properly subscribes to participantsMap changes
+  const participants = useMemo(() => {
+    return Array.from(participantsMap.values());
+  }, [participantsMap]);
+
+  const isVisible = (status === 'calling' || status === 'active') && isGroupCall;
 
   // Call duration timer
   useEffect(() => {
@@ -69,6 +75,10 @@ export function GroupCallScreen() {
     const tileWidth = SCREEN_WIDTH / tilesPerRow - 16;
     const tileHeight = participantCount === 1 ? SCREEN_HEIGHT * 0.5 : SCREEN_HEIGHT / 3;
 
+    // Check if participant has video enabled and has a stream with video tracks
+    const hasVideoStream = participant.stream && participant.stream.getVideoTracks().length > 0;
+    const isParticipantVideoEnabled = participant.isVideoEnabled !== false && hasVideoStream;
+
     return (
       <View
         key={participant.userId}
@@ -79,8 +89,9 @@ export function GroupCallScreen() {
             height: tileHeight,
           },
         ]}>
-        {callType === 'video' && participant.stream ? (
+        {isParticipantVideoEnabled ? (
           <RTCView
+            key={`rtcview-${participant.userId}-${participant.stream?.id || 'no-stream'}`}
             streamURL={participant.stream.toURL()}
             style={styles.participantVideo}
             objectFit="cover"
@@ -89,12 +100,25 @@ export function GroupCallScreen() {
         ) : (
           <View style={styles.participantAvatar}>
             <MaterialCommunityIcons name="account" size={60} color="#a6c455" />
+            {!isParticipantVideoEnabled && (
+              <View style={styles.cameraOffBadge}>
+                <MaterialCommunityIcons name="video-off" size={20} color="#ff4444" />
+              </View>
+            )}
           </View>
         )}
 
         {/* Participant Info Overlay */}
         <View style={styles.participantInfo}>
           <Text style={styles.participantName}>{participant.userName}</Text>
+          {!isParticipantVideoEnabled && (
+            <MaterialCommunityIcons
+              name="video-off"
+              size={16}
+              color="#ff4444"
+              style={styles.statusIcon}
+            />
+          )}
           {participant.isMuted && (
             <MaterialCommunityIcons
               name="microphone-off"
@@ -138,41 +162,89 @@ export function GroupCallScreen() {
           )}
         </ScrollView>
 
-        {/* Local Video (Picture in Picture) */}
-        {callType === 'video' && localStream && (
-          <View style={styles.localVideoContainer} pointerEvents="box-none">
+        {/* Local Video PiP — always shown, camera starts off */}
+        <View style={styles.localVideoContainer} pointerEvents="box-none">
+          {isVideoEnabled && localStream ? (
             <RTCView
               streamURL={localStream.toURL()}
               style={styles.localVideo}
               objectFit="cover"
-              mirror={true}
+              mirror={isFrontCamera}
               zOrder={1}
             />
-            <Text style={styles.localLabel}>YOU</Text>
-          </View>
-        )}
+          ) : (
+            <View style={styles.localVideoDisabled}>
+              <MaterialCommunityIcons name="account" size={40} color="#a6c455" />
+              <MaterialCommunityIcons
+                name="video-off"
+                size={16}
+                color="#ff4444"
+                style={styles.localCameraOffIcon}
+              />
+            </View>
+          )}
+          <Text style={styles.localLabel}>YOU</Text>
+        </View>
 
         {/* Call Controls */}
         <View style={styles.controls}>
-          <TouchableOpacity
-            style={[styles.controlButton, isMuted && styles.controlButtonActive]}
-            onPress={toggleMute}>
-            <MaterialCommunityIcons
-              name={isMuted ? 'microphone-off' : 'microphone'}
-              size={28}
-              color={isMuted ? '#ff4444' : '#a6c455'}
-            />
-            <Text style={styles.controlLabel}>
-              {isMuted ? 'UNMUTE' : 'MUTE'}
-            </Text>
-          </TouchableOpacity>
-
-          {callType === 'video' && (
+          {/* Top row: secondary actions */}
+          <View style={styles.controlsRow}>
             <TouchableOpacity
-              style={[
-                styles.controlButton,
-                !isVideoEnabled && styles.controlButtonActive,
-              ]}
+              style={[styles.controlButtonSmall, isSpeakerEnabled && styles.controlButtonActive]}
+              onPress={toggleSpeaker}>
+              <MaterialCommunityIcons
+                name={isSpeakerEnabled ? 'volume-high' : 'volume-off'}
+                size={22}
+                color={isSpeakerEnabled ? '#a6c455' : '#888'}
+              />
+              <Text style={styles.controlLabel}>SPEAKER</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.controlButtonSmall}
+              onPress={() => {
+                switchCamera();
+                webrtcService.switchCamera();
+              }}
+              disabled={!isVideoEnabled}>
+              <MaterialCommunityIcons
+                name="camera-flip"
+                size={22}
+                color={isVideoEnabled ? '#a6c455' : '#555'}
+              />
+              <Text style={styles.controlLabel}>FLIP</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Bottom row: primary actions */}
+          <View style={styles.controlsRow}>
+            <TouchableOpacity
+              style={[styles.controlButton, isMuted && styles.controlButtonActive]}
+              onPress={toggleMute}>
+              <MaterialCommunityIcons
+                name={isMuted ? 'microphone-off' : 'microphone'}
+                size={28}
+                color={isMuted ? '#ff4444' : '#a6c455'}
+              />
+              <Text style={styles.controlLabel}>
+                {isMuted ? 'UNMUTE' : 'MUTE'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.controlButton, styles.endCallButton]}
+              onPress={handleEndCall}>
+              <MaterialCommunityIcons
+                name="phone-hangup"
+                size={28}
+                color="#fff"
+              />
+              <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.controlButton, !isVideoEnabled && styles.controlButtonActive]}
               onPress={toggleVideo}>
               <MaterialCommunityIcons
                 name={isVideoEnabled ? 'video' : 'video-off'}
@@ -183,32 +255,7 @@ export function GroupCallScreen() {
                 {isVideoEnabled ? 'HIDE' : 'SHOW'}
               </Text>
             </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            style={[
-              styles.controlButton,
-              isSpeakerEnabled && styles.controlButtonActive,
-            ]}
-            onPress={toggleSpeaker}>
-            <MaterialCommunityIcons
-              name={isSpeakerEnabled ? 'volume-high' : 'volume-off'}
-              size={28}
-              color={isSpeakerEnabled ? '#a6c455' : '#888'}
-            />
-            <Text style={styles.controlLabel}>SPEAKER</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.controlButton, styles.endCallButton]}
-            onPress={handleEndCall}>
-            <MaterialCommunityIcons
-              name="phone-hangup"
-              size={28}
-              color="#fff"
-            />
-            <Text style={[styles.controlLabel, { color: '#fff' }]}>END</Text>
-          </TouchableOpacity>
+          </View>
         </View>
       </View>
     </Modal>
@@ -269,6 +316,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  cameraOffBadge: {
+    position: 'absolute',
+    bottom: 50,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    padding: 4,
+  },
   participantInfo: {
     position: 'absolute',
     bottom: 0,
@@ -307,6 +361,17 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  localVideoDisabled: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  localCameraOffIcon: {
+    position: 'absolute',
+    bottom: 30,
+  },
   localLabel: {
     position: 'absolute',
     bottom: 4,
@@ -320,20 +385,35 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   controls: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
     paddingHorizontal: 16,
-    paddingVertical: 32,
+    paddingTop: 12,
+    paddingBottom: 32,
     backgroundColor: '#1a1a1a',
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   controlButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: '#2a2a2a',
     borderWidth: 2,
+    borderColor: '#3a3a3a',
+  },
+  controlButtonSmall: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
     borderColor: '#3a3a3a',
   },
   controlButtonActive: {
@@ -343,12 +423,15 @@ const styles = StyleSheet.create({
   endCallButton: {
     backgroundColor: '#ff4444',
     borderColor: '#ff6666',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
   },
   controlLabel: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: 'bold',
     color: '#888',
-    marginTop: 4,
+    marginTop: 3,
     letterSpacing: 0.5,
   },
 });

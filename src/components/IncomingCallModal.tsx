@@ -1,45 +1,76 @@
-import React from 'react';
-import {View, Text, Modal, TouchableOpacity, StyleSheet} from 'react-native';
+import React, { useEffect } from 'react';
+import { View, Text, Modal, TouchableOpacity, StyleSheet } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {Participant, useCallStore} from '../store/callStore';
-import {webrtcService} from '../services/webrtcService';
+import { Participant, useCallStore } from '../store/callStore';
+import { webrtcService } from '../services/webrtcService';
+import { callNotificationService } from '../services/callNotificationService';
 
 export function IncomingCallModal() {
-  const {status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants} = useCallStore();
+  const { status, callerName, callType, callId, offer, isGroupCall, groupName, getAllParticipants } = useCallStore();
 
   const isVisible = status === 'ringing';
   const participants = getAllParticipants();
 
+  // For 1-on-1 calls, we need the offer to accept
+  const canAccept = isGroupCall || !!offer;
+
+  // Report call ended to CallKit when call ends (iOS)
+  useEffect(() => {
+    if (status === 'ended' || status === 'idle') {
+      callNotificationService.reportCallEnded();
+      callNotificationService.cancelCallNotification(); // Explicitly cancel on end
+    } else if (status === 'active' || status === 'calling') {
+      if (status === 'active') {
+        callNotificationService.reportCallConnected();
+      }
+      callNotificationService.cancelCallNotification(); // Cancel once connected or answering
+    }
+  }, [status]);
+
   const handleAccept = async () => {
     try {
-      console.log('[IncomingCall] Accepting call, isGroupCall:', isGroupCall);
+      // Cancel notification IMMEDIATELY before any state changes
+      // (state changes cause this component to unmount, preventing useEffect cleanup)
+      console.log('[IncomingCall] Canceling notification on accept');
+      callNotificationService.cancelCallNotification();
 
-      if (isGroupCall) {
+      // Get fresh state from store to ensure we have the latest values
+      const currentState = useCallStore.getState();
+      const currentOffer = currentState.offer;
+      const currentCallType = currentState.callType;
+      const currentIsGroupCall = currentState.isGroupCall;
+
+      console.log('[IncomingCall] Accepting call, isGroupCall:', currentIsGroupCall);
+      console.log('[IncomingCall] Has offer:', !!currentOffer);
+
+      if (currentIsGroupCall) {
         // For group calls, just join the call
         console.log('[IncomingCall] Accepting group call');
         useCallStore.getState().setCallStatus('calling');
 
-        // Get participant IDs
-        const participantIds = participants.map((p: Participant) => p.userId);
+        // Get participant IDs from current state
+        const currentParticipants = currentState.getAllParticipants();
+        const participantIds = currentParticipants.map((p: Participant) => p.userId);
 
         // Start group call
         await webrtcService.startGroupCall(participantIds);
       } else {
         // For 1-on-1 calls, answer with the offer
-        if (!offer) {
-          console.error('[IncomingCall] No offer available to answer');
-          webrtcService.endCall();
+        if (!currentOffer) {
+          console.error('[IncomingCall] No offer available to answer - waiting for offer to arrive');
+          // Don't end the call, just return and wait for offer
           return;
         }
 
         useCallStore.getState().setCallStatus('calling');
 
         // Answer the call with the stored offer
-        await webrtcService.answerCall(callType, offer);
+        await webrtcService.answerCall(currentCallType, currentOffer);
       }
     } catch (error) {
       console.error('[IncomingCall] Error accepting call:', error);
-      if (isGroupCall) {
+      const currentState = useCallStore.getState();
+      if (currentState.isGroupCall) {
         webrtcService.endGroupCall();
       } else {
         webrtcService.endCall();
@@ -49,7 +80,14 @@ export function IncomingCallModal() {
 
   const handleReject = () => {
     console.log('[IncomingCall] Rejecting call');
-    if (isGroupCall) {
+    // Cancel notification IMMEDIATELY before any state changes
+    // (state changes cause this component to unmount, preventing useEffect cleanup)
+    console.log('[IncomingCall] Canceling notification on reject');
+    callNotificationService.cancelCallNotification();
+
+    // Get fresh state from store
+    const currentState = useCallStore.getState();
+    if (currentState.isGroupCall) {
       webrtcService.endGroupCall();
     } else {
       webrtcService.rejectCall();
@@ -110,14 +148,21 @@ export function IncomingCallModal() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.actionButton, styles.acceptButton]}
-              onPress={handleAccept}>
+              style={[
+                styles.actionButton,
+                styles.acceptButton,
+                !canAccept && styles.disabledButton,
+              ]}
+              onPress={handleAccept}
+              disabled={!canAccept}>
               <MaterialCommunityIcons
                 name="phone"
                 size={32}
                 color="#fff"
               />
-              <Text style={styles.actionLabel}>ACCEPT</Text>
+              <Text style={styles.actionLabel}>
+                {canAccept ? 'ACCEPT' : 'WAIT...'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -213,6 +258,11 @@ const styles = StyleSheet.create({
   acceptButton: {
     backgroundColor: '#4d5d30',
     borderColor: '#5a6b38',
+  },
+  disabledButton: {
+    backgroundColor: '#555',
+    borderColor: '#666',
+    opacity: 0.7,
   },
   actionLabel: {
     fontSize: 10,

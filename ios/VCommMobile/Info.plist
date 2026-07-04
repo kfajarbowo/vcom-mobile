@@ -48,5 +48,15 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+		<string>voip</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>VComm needs camera access for video calls</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>VComm needs microphone access for voice and video calls</string>
 </dict>
 </plist>

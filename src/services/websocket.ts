@@ -1,35 +1,49 @@
-import {getApiBaseUrl, getSessionToken} from './apiClient';
-import {useChatStore} from '../store/chatStore';
+import { Alert } from 'react-native';
+import { getApiBaseUrl, getSessionToken } from './apiClient';
+import { useChatStore } from '../store/chatStore';
 
 
 export type WebSocketMessage = {
   type:
-    | 'new_message'
-    | 'user_status'
-    | 'typing'
-    | 'read_receipt'
-    | 'incoming_call'
-    | 'webrtc_offer'
-    | 'webrtc_answer'
-    | 'webrtc_ice_candidate'
-    | 'group_webrtc_offer'
-    | 'group_webrtc_answer'
-    | 'group_webrtc_ice_candidate'
-    | 'start_group_call'
-    | 'join_group_call'
-    | 'initiate_call'
-    | 'initiate_group_webrtc'
-    | 'end_call'
-    | 'call_accepted'
-    | 'call_ended'
-    | 'call_missed'
-    | 'incoming_group_call'
-    | 'group_call_participants_update'
-    | 'group_call_ended'
-    | 'leave_group_call'
-    | 'participant_joined'
-    | 'participant_left'
-    | 'group_update';
+  | 'new_message'
+  | 'user_status'
+  | 'typing'
+  | 'read_receipt'
+  | 'incoming_call'
+  | 'webrtc_offer'
+  | 'webrtc_answer'
+  | 'webrtc_ice_candidate'
+  | 'group_webrtc_offer'
+  | 'group_webrtc_answer'
+  | 'group_webrtc_ice_candidate'
+  | 'start_group_call'
+  | 'join_group_call'
+  | 'initiate_call'
+  | 'initiate_group_webrtc'
+  | 'end_call'
+  | 'call_accepted'
+  | 'call_ended'
+  | 'call_missed'
+  | 'incoming_group_call'
+  | 'group_call_participants_update'
+  | 'group_call_ended'
+  | 'leave_group_call'
+  | 'participant_joined'
+  | 'participant_left'
+  | 'participant_joined'
+  | 'participant_left'
+  | 'group_update'
+  | 'call_rejected'
+  | 'call_failed'
+  | 'reject_call'
+  | 'reject_group_call'
+  | 'group_call_initiated'
+  | 'force_webrtc_reconnect'
+  | 'pong'
+  | 'group_call_user_left'
+  | 'message_deleted'
+  | 'session_terminated'
+  | 'webrtc_ready';
   payload: any;
 };
 
@@ -38,12 +52,15 @@ type MessageHandler = (message: WebSocketMessage) => void;
 class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectTimeout: NodeJS.Timeout | null = null;
+  private pingInterval: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 999; // Keep trying to reconnect
   private reconnectDelay = 3000; // 3 seconds between attempts
+  private pingIntervalMs = 30000; // 30 seconds
   private messageHandlers: Set<MessageHandler> = new Set();
   private isConnecting = false;
   private isAuthenticated = false;
+  private sessionTerminated = false;
 
   async connect(userId?: number): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
@@ -51,6 +68,8 @@ class WebSocketService {
       return;
     }
 
+    // Fresh connection attempt clears any previous forced-termination state
+    this.sessionTerminated = false;
     this.isConnecting = true;
 
     try {
@@ -73,15 +92,15 @@ class WebSocketService {
         // Use provided userId or get from auth store
         let authUserId = userId;
         if (!authUserId) {
-          const {useAuthStore} = await import('../store/authStore');
+          const { useAuthStore } = await import('../store/authStore');
           authUserId = useAuthStore.getState().user?.id;
         }
 
         if (authUserId) {
-          console.log('[WebSocket] ✅ Sending authentication with userId:', authUserId);
+          console.log('[WebSocket] ✅ Sending authentication with userId:', authUserId, '(foreground)');
           this.send({
             type: 'auth',
-            payload: {userId: authUserId},
+            payload: { userId: authUserId, source: 'foreground' },
           });
           // Give server time to process auth (500ms should be enough)
           setTimeout(() => {
@@ -91,12 +110,19 @@ class WebSocketService {
         } else {
           console.warn('[WebSocket] ⚠️ No user ID available for authentication');
         }
+
+        // Start ping interval to keep connection alive
+        this.startPingInterval();
       };
 
       this.ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
-          console.log('[WebSocket] 📨 Message received:', message.type);
+
+          // Only log non-frequent message types to reduce noise
+          if (message.type !== 'user_status' && message.type !== 'pong') {
+            console.log('[WebSocket] 📨 Message received:', message.type);
+          }
 
           // Log full message for call-related types
           if (message.type === 'webrtc_answer' || message.type === 'webrtc_offer') {
@@ -126,6 +152,7 @@ class WebSocketService {
         });
         this.isConnecting = false;
         this.isAuthenticated = false;
+        this.stopPingInterval();
         useChatStore.getState().setConnected(false);
         this.ws = null;
 
@@ -142,6 +169,13 @@ class WebSocketService {
   }
 
   private scheduleReconnect(): void {
+    // Don't reconnect if the server terminated this session because the
+    // same user logged in from another device - the user has been logged out.
+    if (this.sessionTerminated) {
+      console.log('[WebSocket] Session terminated by server, skipping reconnect');
+      return;
+    }
+
     if (
       this.reconnectAttempts >= this.maxReconnectAttempts ||
       this.reconnectTimeout
@@ -172,6 +206,8 @@ class WebSocketService {
       this.reconnectTimeout = null;
     }
 
+    this.stopPingInterval();
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -180,6 +216,26 @@ class WebSocketService {
     this.isAuthenticated = false;
     useChatStore.getState().setConnected(false);
     this.reconnectAttempts = 0;
+  }
+
+  private startPingInterval(): void {
+    this.stopPingInterval();
+    this.pingInterval = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        try {
+          this.send({ type: 'ping' });
+        } catch (error) {
+          console.error('[WebSocket] Ping error:', error);
+        }
+      }
+    }, this.pingIntervalMs);
+  }
+
+  private stopPingInterval(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
   }
 
   send(message: any): void {
@@ -197,6 +253,14 @@ class WebSocketService {
   }
 
   private async handleMessage(message: WebSocketMessage): Promise<void> {
+    // Forced logout: the same user logged in from another device.
+    // The server has invalidated this session, so log the previous device out.
+    if (message.type === 'session_terminated') {
+      console.log('[WebSocket] ⚠️ Session terminated by server:', message.payload?.reason);
+      await this.handleSessionTerminated(message.payload);
+      return;
+    }
+
     this.messageHandlers.forEach((handler) => {
       try {
         handler(message);
@@ -209,14 +273,16 @@ class WebSocketService {
 
     switch (message.type) {
       case 'new_message': {
-        const {conversationId, ...messageData} = message.payload;
+        const { conversationId: rawConversationId, ...messageData } = message.payload;
+        // Convert conversationId to number to ensure type consistency
+        const conversationId = typeof rawConversationId === 'string' ? parseInt(rawConversationId, 10) : rawConversationId;
         if (conversationId) {
           // Get current user ID
-          const {useAuthStore} = await import('../store/authStore');
+          const { useAuthStore } = await import('../store/authStore');
           const currentUserId = useAuthStore.getState().user?.id;
 
-          // Check if message is from another user
-          const isOwnMessage = messageData.senderId === currentUserId;
+          // Check if message is from another user (convert to number for comparison)
+          const isOwnMessage = Number(messageData.senderId) === Number(currentUserId);
 
           // Check if user is currently viewing this conversation
           const isViewingConversation = chatStore.currentConversationId === conversationId;
@@ -238,7 +304,7 @@ class WebSocketService {
           if (!existingConversation) {
             console.log('[WebSocket] New conversation detected, fetching details...');
             try {
-              const {apiRequest} = await import('./apiClient');
+              const { apiRequest } = await import('./apiClient');
               const conversationData = await apiRequest(`/api/conversations/${conversationId}`);
 
               if (conversationData) {
@@ -280,10 +346,10 @@ class WebSocketService {
             });
           }
 
-          // Add the message to the conversation
+          // Add the message to the conversation (convert IDs to numbers)
           chatStore.addMessage(conversationId, {
-            id: messageData.id,
-            senderId: messageData.senderId,
+            id: Number(messageData.id),
+            senderId: Number(messageData.senderId),
             senderName: messageData.senderName || 'Unknown',
             content: messageData.content,
             timestamp: messageData.timestamp || new Date().toISOString(),
@@ -294,34 +360,39 @@ class WebSocketService {
             attachmentUrl: messageData.attachmentUrl,
             attachmentName: messageData.attachmentName,
             attachmentSize: messageData.attachmentSize,
-            replyToId: messageData.replyToId,
+            replyToId: messageData.replyToId ? Number(messageData.replyToId) : undefined,
           });
         }
         break;
       }
 
       case 'typing': {
-        const {conversationId, userId, isTyping} = message.payload;
+        const { conversationId: rawConvId, userId: rawUserId, isTyping } = message.payload;
+        const convId = Number(rawConvId);
+        const userId = Number(rawUserId);
         if (isTyping) {
-          chatStore.addTypingUser(conversationId, userId);
+          chatStore.addTypingUser(convId, userId);
         } else {
-          chatStore.removeTypingUser(conversationId, userId);
+          chatStore.removeTypingUser(convId, userId);
         }
         break;
       }
 
       case 'read_receipt': {
-        const {conversationId, messageId} = message.payload;
-        if (conversationId && messageId) {
-          chatStore.updateMessage(conversationId, messageId, {isRead: true});
+        const { conversationId: rawConvId, messageId: rawMsgId } = message.payload;
+        const convId = Number(rawConvId);
+        const msgId = Number(rawMsgId);
+        if (convId && msgId) {
+          chatStore.updateMessage(convId, msgId, { isRead: true });
         }
         break;
       }
 
       case 'group_update': {
-        const {groupId, updateType, data} = message.payload;
+        const { groupId: rawGroupId, updateType, data } = message.payload;
+        const groupId = Number(rawGroupId);
         if (updateType === 'name_updated') {
-          chatStore.updateConversation(groupId, {name: data.name});
+          chatStore.updateConversation(groupId, { name: data.name });
         }
         break;
       }
@@ -336,6 +407,28 @@ class WebSocketService {
         break;
       }
     }
+  }
+
+  private async handleSessionTerminated(payload: any): Promise<void> {
+    // Mark as terminated so the close handler doesn't try to reconnect/re-auth.
+    this.sessionTerminated = true;
+
+    const message =
+      payload?.message ||
+      'Sesi Anda telah dihentikan karena Anda login dari perangkat lain.';
+
+    // Log the user out (this also disconnects the WebSocket and clears the token).
+    try {
+      const { useAuthStore } = await import('../store/authStore');
+      await useAuthStore.getState().logout();
+    } catch (error) {
+      console.error('[WebSocket] Error during forced logout:', error);
+      // Ensure the socket is torn down even if logout failed.
+      this.disconnect();
+    }
+
+    // Inform the user why they were logged out.
+    Alert.alert('Sesi Berakhir', message, [{ text: 'OK' }]);
   }
 
   addMessageHandler(handler: MessageHandler): () => void {

@@ -5,43 +5,45 @@ import { CallType } from '../store/callStore';
  * Shared configuration for all WebRTC connections
  */
 
-// ICE server configuration
-export const ICE_SERVERS = {
-  iceServers: [
-    // Google's public STUN servers
-    {
-      urls: 'stun:stun.l.google.com:19302',
-    },
-    {
-      urls: 'stun:stun1.l.google.com:19302',
-    },
-    {
-      urls: 'stun:stun2.l.google.com:19302',
-    },
-    // Local TURN server (coturn) - use local network IP for real devices
-    {
-      urls: 'turn:192.168.1.72:3478',
-      username: 'test',
-      credential: 'test123',
-    },
-    // Also try UDP and TCP
-    {
-      urls: 'turn:192.168.1.72:3478?transport=udp',
-      username: 'test',
-      credential: 'test123',
-    },
-    {
-      urls: 'turn:192.168.1.72:3478?transport=tcp',
-      username: 'test',
-      credential: 'test123',
-    },
-  ],
-  iceTransportPolicy: 'all' as const,
-  iceCandidatePoolSize: 10,
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Configurable TURN server defaults
+const TURN_USERNAME = 'test';
+const TURN_CREDENTIAL = 'test123';
+
+// Get dynamic ICE server configuration
+export const getIceServers = async () => {
+  let host = 'chat.id';
+  try {
+    const storedHost = await AsyncStorage.getItem('vcomm_server_host');
+    if (storedHost) {
+      host = storedHost;
+    }
+  } catch (error) {
+    console.error('Failed to get server host for WebRTC config:', error);
+  }
+
+  const turnServer = `${host}:3478`;
+
+  return {
+    iceServers: [
+      // Google's public STUN servers
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      // TURN server (dynamic)
+      { urls: `turn:${turnServer}`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: `turn:${turnServer}?transport=udp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: `turn:${turnServer}?transport=tcp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+    ],
+    iceTransportPolicy: 'all' as const,
+    iceCandidatePoolSize: 10,
+  };
 };
 
 // Media constraints for getUserMedia
-export const getMediaConstraints = (callType: CallType) => ({
+// Always request both audio and video — camera starts disabled at the track level
+export const getMediaConstraints = () => ({
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
@@ -49,17 +51,19 @@ export const getMediaConstraints = (callType: CallType) => ({
     sampleRate: { ideal: 48000 },
     channelCount: { ideal: 1 },
   },
-  video: callType === 'video' ? {
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 30 },
+  video: {
     facingMode: 'user',
-  } : false,
+    width: 1280,
+    height: 720,
+    frameRate: 30,
+  },
 });
 
 // InCallManager options
+// Always use 'audio' media type to default to earpiece (phone mode)
+// Even for video calls - the unified UI supports video but starts with earpiece
 export const getInCallManagerOptions = (callType: CallType) => ({
-  media: (callType === 'video' ? 'video' : 'audio') as 'audio' | 'video',
+  media: 'audio' as 'audio' | 'video',
   auto: true,
   ringback: '',
 });

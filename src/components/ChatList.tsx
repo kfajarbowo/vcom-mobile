@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useState, useCallback} from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,11 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useChatStore, type Conversation} from '../store/chatStore';
 import {useAuthStore} from '../store/authStore';
 import {apiRequest} from '../services/apiClient';
+import {websocketService} from '../services/websocket';
 import {NewConversation} from './NewConversation';
 
 interface ChatListProps {
@@ -18,20 +20,20 @@ interface ChatListProps {
 
 export function ChatList({onSelectChat}: ChatListProps) {
   const {user} = useAuthStore();
-  const {conversations, setConversations} = useChatStore();
+  // Use proper Zustand selectors for reactive updates
+  const conversations = useChatStore((state) => state.conversations);
+  const setConversations = useChatStore((state) => state.setConversations);
   const [isLoading, setIsLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [userStatuses, setUserStatuses] = useState<Map<number, string>>(new Map());
   const [showNewConversation, setShowNewConversation] = useState(false);
 
-  useEffect(() => {
-    console.log('[ChatList] Component mounted, loading data...');
-    loadConversations();
-    loadUsers();
-  }, []);
-
-  const loadConversations = async () => {
+  // Load conversations from API
+  const loadConversations = useCallback(async (showLoading: boolean = true) => {
     try {
-      setIsLoading(true);
+      if (showLoading) {
+        setIsLoading(true);
+      }
       console.log('[ChatList] Fetching conversations...');
       const data = await apiRequest('/api/conversations');
       console.log('[ChatList] Received conversations:', data?.length || 0);
@@ -39,16 +41,20 @@ export function ChatList({onSelectChat}: ChatListProps) {
       const formattedConversations: Conversation[] = (Array.isArray(data) ? data : [])
         .filter((conv: any) => conv && conv.id) // Filter out invalid items
         .map((conv: any) => {
-          console.log('[ChatList] Mapping conversation:', conv.id, 'otherUserId:', conv.otherUserId, 'isGroup:', conv.isGroup);
+          // Convert all IDs to numbers for type consistency
+          const convId = Number(conv.id);
+          const otherUserId = conv.otherUserId ? Number(conv.otherUserId) : undefined;
+          console.log('[ChatList] Mapping conversation:', convId, 'otherUserId:', otherUserId, 'isGroup:', conv.isGroup);
           return {
-            id: conv.id,
+            id: convId,
             name: conv.name || 'Unnamed Chat',
             isGroup: conv.isGroup || false,
             lastMessage: conv.lastMessage || '',
             lastMessageTime: conv.lastMessageTime || conv.updatedAt || '',
-            unreadCount: conv.unreadCount || 0,
-            members: conv.memberCount || 2,
-            otherUserId: conv.otherUserId, // Include otherUserId for direct chats
+            unreadCount: Number(conv.unreadCount) || 0,
+            members: Number(conv.memberCount) || 2,
+            otherUserId: otherUserId,
+            isMuted: !!conv.isMuted,
           };
         })
         .sort((a, b) => {
@@ -63,14 +69,68 @@ export function ChatList({onSelectChat}: ChatListProps) {
     } catch (error) {
       console.error('[ChatList] Error loading conversations:', error);
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
-  };
+  }, [setConversations]);
+
+  // Handle user status updates from WebSocket
+  const handleUserStatus = useCallback((message: any) => {
+    if (message.type === 'user_status') {
+      const userId = Number(message.payload.userId);
+      const status = message.payload.status;
+      setUserStatuses(prev => {
+        // Skip update if status hasn't changed to avoid unnecessary re-renders
+        if (prev.get(userId) === status) return prev;
+        const newMap = new Map(prev);
+        newMap.set(userId, status);
+        return newMap;
+      });
+    }
+  }, []);
+
+  // Handle new message updates from WebSocket to update conversation list
+  const handleNewMessage = useCallback((message: any) => {
+    if (message.type === 'new_message') {
+      const payload = message.payload;
+      const conversationId = Number(payload.conversationId);
+      console.log('[ChatList] New message received for conversation:', conversationId);
+
+      // Force refresh conversations to get updated lastMessage and unreadCount
+      // Pass false to avoid showing loading indicator for background updates
+      loadConversations(false);
+    }
+  }, [loadConversations]);
+
+  useEffect(() => {
+    console.log('[ChatList] Component mounted, loading data...');
+    loadConversations();
+    loadUsers();
+
+    // Subscribe to WebSocket messages for user status and new message updates
+    const unsubscribeStatus = websocketService.addMessageHandler(handleUserStatus);
+    const unsubscribeMessage = websocketService.addMessageHandler(handleNewMessage);
+    return () => {
+      unsubscribeStatus();
+      unsubscribeMessage();
+    };
+  }, [loadConversations, handleUserStatus, handleNewMessage]);
 
   const loadUsers = async () => {
     try {
       const users = await apiRequest('/api/all-users');
       setAllUsers(users);
+
+      // Initialize user statuses from API response (convert IDs to numbers)
+      const statusMap = new Map<number, string>();
+      users.forEach((u: any) => {
+        if (u.id && u.status) {
+          statusMap.set(Number(u.id), u.status);
+        }
+      });
+      setUserStatuses(statusMap);
+      console.log('[ChatList] Loaded user statuses:', statusMap.size);
     } catch (error) {
       console.error('Error loading users:', error);
     }
@@ -118,6 +178,32 @@ export function ChatList({onSelectChat}: ChatListProps) {
     onSelectChat(conversationId, isGroup);
   };
 
+  // Get online status for a conversation (for direct chats, check the other user's status)
+  const getOnlineStatus = (conversation: Conversation): boolean => {
+    if (conversation.isGroup) {
+      return false; // Don't show online indicator for groups
+    }
+
+    // For direct chats, check the otherUserId's status
+    if (conversation.otherUserId) {
+      const status = userStatuses.get(conversation.otherUserId);
+      return status === 'online';
+    }
+
+    // Fallback: try to extract from conversation name
+    if (conversation.name?.startsWith('Direct Chat')) {
+      const match = conversation.name.match(/Direct Chat (\d+)-(\d+)/);
+      if (match && user) {
+        const [_, id1, id2] = match;
+        const partnerId = parseInt(id1) === user.id ? parseInt(id2) : parseInt(id1);
+        const status = userStatuses.get(partnerId);
+        return status === 'online';
+      }
+    }
+
+    return false;
+  };
+
   const renderChatItem = ({item}: {item: Conversation}) => {
     try {
       if (!item || !item.id) {
@@ -129,15 +215,21 @@ export function ChatList({onSelectChat}: ChatListProps) {
       const lastMessage = String(item.lastMessage || 'NO MESSAGES');
       const timestamp = String(formatTime(item.lastMessageTime || '') || '');
       const unreadCount = Number(item.unreadCount || 0);
+      const isOnline = getOnlineStatus(item);
 
       return (
         <TouchableOpacity
           style={styles.chatItem}
           onPress={() => onSelectChat(item.id, item.isGroup)}>
-          <View style={[styles.avatar, item.isGroup ? styles.groupAvatar : styles.directAvatar]}>
-            <Text style={styles.avatarText}>
-              {displayName.substring(0, 2).toUpperCase()}
-            </Text>
+          <View style={styles.avatarContainer}>
+            <View style={[styles.avatar, item.isGroup ? styles.groupAvatar : styles.directAvatar]}>
+              <Text style={styles.avatarText}>
+                {displayName.substring(0, 2).toUpperCase()}
+              </Text>
+            </View>
+            {!item.isGroup && (
+              <View style={[styles.onlineIndicator, isOnline ? styles.onlineIndicatorActive : styles.onlineIndicatorInactive]} />
+            )}
           </View>
 
           <View style={styles.chatContent}>
@@ -150,6 +242,9 @@ export function ChatList({onSelectChat}: ChatListProps) {
                   <View style={styles.groupBadge}>
                     <Text style={styles.groupBadgeText}>GROUP</Text>
                   </View>
+                )}
+                {item.isMuted && (
+                  <MaterialCommunityIcons name="bell-off" size={14} color="#888" style={{marginLeft: 4}} />
                 )}
               </View>
               {timestamp && (
@@ -207,7 +302,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
         <TouchableOpacity
           style={styles.fab}
           onPress={() => setShowNewConversation(true)}>
-          <Text style={styles.fabIcon}>+</Text>
+          <MaterialCommunityIcons name="account-plus" size={28} color="#a6c455" />
         </TouchableOpacity>
 
         <NewConversation
@@ -239,7 +334,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
       <TouchableOpacity
         style={styles.fab}
         onPress={() => setShowNewConversation(true)}>
-        <Text style={styles.fabIcon}>+</Text>
+        <MaterialCommunityIcons name="account-plus" size={28} color="#a6c455" />
       </TouchableOpacity>
 
       <NewConversation
@@ -301,14 +396,33 @@ const styles = StyleSheet.create({
     borderBottomColor: '#2a2a2a',
     backgroundColor: '#1a1a1a',
   },
+  avatarContainer: {
+    position: 'relative',
+    marginRight: 12,
+  },
   avatar: {
     width: 52,
     height: 52,
     borderRadius: 4,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
     borderWidth: 2,
+  },
+  onlineIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: '#1a1a1a',
+  },
+  onlineIndicatorActive: {
+    backgroundColor: '#4ade80',
+  },
+  onlineIndicatorInactive: {
+    backgroundColor: '#666',
   },
   groupAvatar: {
     backgroundColor: '#4d5d30',
@@ -452,10 +566,5 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     borderWidth: 3,
     borderColor: '#5a6b38',
-  },
-  fabIcon: {
-    color: '#a6c455',
-    fontSize: 32,
-    fontWeight: '300',
   },
 });

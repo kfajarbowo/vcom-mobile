@@ -1,5 +1,6 @@
-import {create} from 'zustand';
-import {MediaStream} from 'react-native-webrtc';
+import { create } from 'zustand';
+import { MediaStream } from 'react-native-webrtc';
+import InCallManager from 'react-native-incall-manager';
 
 export type CallType = 'audio' | 'video';
 export type CallStatus = 'idle' | 'calling' | 'ringing' | 'active' | 'ended';
@@ -37,6 +38,8 @@ export interface CallState {
   isMuted: boolean;
   isVideoEnabled: boolean;
   isSpeakerEnabled: boolean;
+  isRemoteVideoEnabled: boolean;
+  isFrontCamera: boolean; // true = front camera, false = back camera
 
   // Group call support
   isGroupCall: boolean;
@@ -62,9 +65,13 @@ export interface CallState {
   }) => void;
   setLocalStream: (stream: MediaStream | null) => void;
   setRemoteStream: (stream: MediaStream | null) => void;
+  setOffer: (offer: any) => void;
+  setCallType: (callType: CallType) => void;
   toggleMute: () => void;
   toggleVideo: () => void;
   toggleSpeaker: () => void;
+  switchCamera: () => void;
+  setRemoteVideoEnabled: (enabled: boolean) => void;
   endCall: () => void;
   reset: () => void;
 
@@ -82,7 +89,7 @@ export interface CallState {
     callerUserId: number;
     conversationId: number;
     groupName: string;
-    participants: {userId: number; userName: string}[];
+    participants: { userId: number; userName: string }[];
   }) => void;
   addParticipant: (userId: number, userName: string, stream?: MediaStream) => void;
   removeParticipant: (userId: number) => void;
@@ -108,7 +115,9 @@ const initialState = {
   remoteStream: null,
   isMuted: false,
   isVideoEnabled: false,
-  isSpeakerEnabled: true,
+  isSpeakerEnabled: false,
+  isRemoteVideoEnabled: true,
+  isFrontCamera: true, // Default to front camera
   isGroupCall: false,
   participants: new Map<number, Participant>(),
   groupName: null,
@@ -117,9 +126,9 @@ const initialState = {
 export const useCallStore: any = create<CallState>((set) => ({
   ...initialState,
 
-  setCallStatus: (status) => set({status}),
+  setCallStatus: (status) => set({ status }),
 
-  startCall: ({callId, callType, receiverUserId, receiverName, conversationId}) =>
+  startCall: ({ callId, callType, receiverUserId, receiverName, conversationId }) =>
     set({
       callId,
       callType,
@@ -128,10 +137,11 @@ export const useCallStore: any = create<CallState>((set) => ({
       conversationId,
       isIncoming: false,
       status: 'calling',
-      isVideoEnabled: callType === 'video',
+      isVideoEnabled: false,
+      isSpeakerEnabled: false,
     }),
 
-  receiveCall: ({callId, callType, callerUserId, callerName, conversationId, offer}) =>
+  receiveCall: ({ callId, callType, callerUserId, callerName, conversationId, offer }) =>
     set({
       callId,
       callType,
@@ -141,21 +151,29 @@ export const useCallStore: any = create<CallState>((set) => ({
       offer,
       isIncoming: true,
       status: 'ringing',
-      isVideoEnabled: callType === 'video',
+      isVideoEnabled: callType === 'video', // Enable video for incoming video calls
+      isSpeakerEnabled: false,
     }),
 
-  setLocalStream: (stream) => set({localStream: stream}),
+  setLocalStream: (stream) => set({ localStream: stream }),
 
-  setRemoteStream: (stream) => set({remoteStream: stream}),
+  setRemoteStream: (stream) => set({ remoteStream: stream }),
+
+  setOffer: (offer) => set({ offer }),
+
+  setCallType: (callType) => set({ callType }),
 
   toggleMute: () =>
     set((state) => {
+      const newMuted = !state.isMuted;
+      // Optimistic UI: update state immediately, manipulate tracks async (#8)
       if (state.localStream) {
+        // track.enabled = true means audio is ON, so when muting we set false
         state.localStream.getAudioTracks().forEach((track) => {
-          track.enabled = !state.isMuted; // Fixed: Added negation to match toggleVideo logic
+          track.enabled = !newMuted;
         });
       }
-      return {isMuted: !state.isMuted};
+      return { isMuted: newMuted };
     }),
 
   toggleVideo: () =>
@@ -165,18 +183,23 @@ export const useCallStore: any = create<CallState>((set) => ({
           track.enabled = !state.isVideoEnabled;
         });
       }
-      return {isVideoEnabled: !state.isVideoEnabled};
+      return { isVideoEnabled: !state.isVideoEnabled };
     }),
 
   toggleSpeaker: () =>
     set((state) => {
       const newSpeakerState = !state.isSpeakerEnabled;
-      // Import dynamically to avoid circular dependency
-      import('../services/webrtcService').then(({webrtcService}) => {
-        webrtcService.setSpeakerPhone(newSpeakerState);
-      });
-      return {isSpeakerEnabled: newSpeakerState};
+      InCallManager.setForceSpeakerphoneOn(newSpeakerState);
+      return { isSpeakerEnabled: newSpeakerState };
     }),
+
+  switchCamera: () =>
+    set((state) => {
+      // Toggle camera facing mode
+      return { isFrontCamera: !state.isFrontCamera };
+    }),
+
+  setRemoteVideoEnabled: (enabled: boolean) => set({ isRemoteVideoEnabled: enabled }),
 
   endCall: () =>
     set((state) => {
@@ -200,7 +223,7 @@ export const useCallStore: any = create<CallState>((set) => ({
   reset: () => set(initialState),
 
   // Group call actions
-  startGroupCall: ({callId, callType, participantIds, conversationId, groupName}) =>
+  startGroupCall: ({ callId, callType, participantIds, conversationId, groupName }) =>
     set({
       callId,
       callType,
@@ -209,20 +232,21 @@ export const useCallStore: any = create<CallState>((set) => ({
       isGroupCall: true,
       isIncoming: false,
       status: 'calling',
-      isVideoEnabled: callType === 'video',
+      isVideoEnabled: false,
+      isSpeakerEnabled: false,
       participants: new Map(),
     }),
 
-  receiveGroupCall: ({callId, callType, callerUserId, conversationId, groupName, participants}) =>
+  receiveGroupCall: ({ callId, callType, callerUserId, conversationId, groupName, participants }) =>
     set((state) => {
       const participantMap = new Map<number, Participant>();
-      participants.forEach(({userId, userName}) => {
+      participants.forEach(({ userId, userName }) => {
         participantMap.set(userId, {
           userId,
           userName,
           stream: null,
           isMuted: false,
-          isVideoEnabled: callType === 'video',
+          isVideoEnabled: false,
         });
       });
 
@@ -235,7 +259,8 @@ export const useCallStore: any = create<CallState>((set) => ({
         isGroupCall: true,
         isIncoming: true,
         status: 'ringing',
-        isVideoEnabled: callType === 'video',
+        isVideoEnabled: callType === 'video', // Enable video for incoming video calls
+        isSpeakerEnabled: false,
         participants: participantMap,
       };
     }),
@@ -243,14 +268,22 @@ export const useCallStore: any = create<CallState>((set) => ({
   addParticipant: (userId, userName, stream) =>
     set((state) => {
       const newParticipants = new Map(state.participants);
-      newParticipants.set(userId, {
-        userId,
-        userName,
-        stream: stream || null,
-        isMuted: false,
-        isVideoEnabled: state.callType === 'video',
-      });
-      return {participants: newParticipants};
+      const existingParticipant = newParticipants.get(userId);
+
+      // If participant exists (e.g., stream arrived first), update their name
+      // Otherwise create new participant
+      const updatedParticipant = existingParticipant
+        ? { ...existingParticipant, userName, stream: stream || existingParticipant.stream }
+        : {
+          userId,
+          userName,
+          stream: stream || null,
+          isMuted: false,
+          isVideoEnabled: false,
+        };
+
+      newParticipants.set(userId, updatedParticipant);
+      return { participants: newParticipants };
     }),
 
   removeParticipant: (userId) =>
@@ -261,18 +294,28 @@ export const useCallStore: any = create<CallState>((set) => ({
         participant.stream.getTracks().forEach((track) => track.stop());
       }
       newParticipants.delete(userId);
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   updateParticipantStream: (userId, stream) =>
     set((state) => {
       const newParticipants = new Map(state.participants);
-      const participant = newParticipants.get(userId);
-      if (participant) {
-        participant.stream = stream;
-        newParticipants.set(userId, participant);
-      }
-      return {participants: newParticipants};
+      const existingParticipant = newParticipants.get(userId);
+
+      // Create new participant object (not mutate) for proper Zustand change detection
+      // Also create participant if they don't exist yet (stream may arrive before participant_joined)
+      const updatedParticipant = existingParticipant
+        ? { ...existingParticipant, stream }
+        : {
+          userId,
+          userName: '...', // Placeholder until server sends real name
+          stream,
+          isMuted: false,
+          isVideoEnabled: false,
+        };
+
+      newParticipants.set(userId, updatedParticipant);
+      return { participants: newParticipants };
     }),
 
   updateParticipantAudio: (userId, isMuted) =>
@@ -280,10 +323,10 @@ export const useCallStore: any = create<CallState>((set) => ({
       const newParticipants = new Map(state.participants);
       const participant = newParticipants.get(userId);
       if (participant) {
-        participant.isMuted = isMuted;
-        newParticipants.set(userId, participant);
+        // Create new object for proper Zustand change detection
+        newParticipants.set(userId, { ...participant, isMuted });
       }
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   updateParticipantVideo: (userId, isVideoEnabled) =>
@@ -291,10 +334,10 @@ export const useCallStore: any = create<CallState>((set) => ({
       const newParticipants = new Map(state.participants);
       const participant = newParticipants.get(userId);
       if (participant) {
-        participant.isVideoEnabled = isVideoEnabled;
-        newParticipants.set(userId, participant);
+        // Create new object for proper Zustand change detection
+        newParticipants.set(userId, { ...participant, isVideoEnabled });
       }
-      return {participants: newParticipants};
+      return { participants: newParticipants };
     }),
 
   getParticipant: (userId) => {

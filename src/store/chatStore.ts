@@ -13,6 +13,7 @@ export interface Message {
   attachmentUrl?: string;
   attachmentName?: string;
   attachmentSize?: number;
+  attachmentThumbnailUrl?: string;
   replyToId?: number;
   forwardedFromId?: number;
   isDeleted?: boolean;
@@ -28,6 +29,7 @@ export interface Conversation {
   unreadCount: number;
   members: number;
   otherUserId?: number;
+  isMuted?: boolean;
 }
 
 export interface PaginationInfo {
@@ -86,16 +88,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   updateConversation: (id, updates) =>
     set((state) => {
+      console.log('[ChatStore] updateConversation called:', {
+        id,
+        updates,
+        existingConversationsCount: state.conversations.length,
+        conversationFound: state.conversations.some(conv => conv.id === id),
+      });
+
       const updatedConversations = state.conversations.map((conv) =>
         conv.id === id ? {...conv, ...updates} : conv
       );
       // Sort by most recent message time (newest first)
+      const sortedConversations = updatedConversations.sort((a, b) => {
+        const timeA = new Date(a.lastMessageTime || 0).getTime();
+        const timeB = new Date(b.lastMessageTime || 0).getTime();
+        return timeB - timeA;
+      });
+      console.log('[ChatStore] ✅ Conversation updated and sorted');
       return {
-        conversations: updatedConversations.sort((a, b) => {
-          const timeA = new Date(a.lastMessageTime || 0).getTime();
-          const timeB = new Date(b.lastMessageTime || 0).getTime();
-          return timeB - timeA;
-        }),
+        conversations: sortedConversations,
       };
     }),
 
@@ -117,6 +128,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addMessage: (conversationId, message) =>
     set((state) => {
+      console.log('[ChatStore] addMessage called:', {
+        conversationId,
+        messageId: message.id,
+        currentConversationId: state.currentConversationId,
+        existingMessagesCount: state.messages.get(conversationId)?.length || 0,
+      });
+
       const newMessages = new Map(state.messages);
       const conversationMessages = newMessages.get(conversationId) || [];
 
@@ -127,7 +145,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return state; // Don't update if message already exists
       }
 
-      newMessages.set(conversationId, [...conversationMessages, message]);
+      const updatedMessages = [...conversationMessages, message];
+      newMessages.set(conversationId, updatedMessages);
+      console.log('[ChatStore] ✅ Message added, new count:', updatedMessages.length);
       return {messages: newMessages};
     }),
 

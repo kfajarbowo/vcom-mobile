@@ -1,6 +1,6 @@
 import {RTCSessionDescription, RTCIceCandidate} from 'react-native-webrtc';
 import InCallManager from 'react-native-incall-manager';
-import {CallType} from '../store/callStore';
+import {CallType, useCallStore} from '../store/callStore';
 import {oneOnOneCallService} from './oneOnOneCallService';
 import {groupCallService} from './groupCallService';
 
@@ -74,6 +74,28 @@ class WebRTCService {
   setSpeakerPhone(enable: boolean): void {
     InCallManager.setForceSpeakerphoneOn(enable);
     console.log('[WebRTC] Speaker:', enable ? 'ON' : 'OFF');
+  }
+
+  switchCamera(): void {
+    try {
+      const { localStream } = useCallStore.getState();
+      if (!localStream) {
+        console.warn('[WebRTC] Cannot switch camera: no local stream');
+        return;
+      }
+
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (!videoTrack) {
+        console.warn('[WebRTC] Cannot switch camera: no video track');
+        return;
+      }
+
+      // Use react-native-webrtc's built-in camera switch
+      (videoTrack as any)._switchCamera();
+      console.log('[WebRTC] Camera switched successfully');
+    } catch (error) {
+      console.error('[WebRTC] Error switching camera:', error);
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,12 +6,13 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  Dimensions,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
-import {WebView} from 'react-native-webview';
+import Video, { VideoRef } from 'react-native-video';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {getSessionToken} from '../services/apiClient';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface VideoPlayerModalProps {
   visible: boolean;
@@ -20,96 +21,71 @@ interface VideoPlayerModalProps {
   onClose: () => void;
 }
 
-const {width: screenWidth, height: screenHeight} = Dimensions.get('window');
-
 export function VideoPlayerModal({
   visible,
   videoUrl,
   videoName,
   onClose,
 }: VideoPlayerModalProps) {
+  const videoRef = useRef<VideoRef>(null);
+  const [paused, setPaused] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [sessionToken, setSessionToken] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (visible) {
-      setLoading(true);
-      // Load session token when modal opens
-      getSessionToken()
-        .then(token => {
-          console.log('[VideoPlayerModal] Session token loaded:', !!token);
-          setSessionToken(token || '');
-        })
-        .catch(err => {
-          console.error('[VideoPlayerModal] Failed to get session token:', err);
-          setError('Failed to load session');
-        });
-    }
-  }, [visible]);
-
-  const handleClose = () => {
+  const resetState = useCallback(() => {
+    setPaused(false);
+    setMuted(false);
     setLoading(true);
     setError(null);
+    setDuration(0);
+    setCurrentTime(0);
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+  }, []);
+
+  const handleClose = () => {
+    resetState();
     onClose();
   };
 
-  // Create HTML that uses the video URL directly
-  const videoHTML = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-      <style>
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
-        body {
-          background-color: #000000;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          height: 100vh;
-          overflow: hidden;
-        }
-        video {
-          width: 100%;
-          height: 100%;
-          max-width: 100vw;
-          max-height: 100vh;
-          object-fit: contain;
-        }
-        #loading {
-          position: absolute;
-          color: #a6c455;
-          font-family: monospace;
-          font-size: 14px;
-          text-align: center;
-        }
-      </style>
-    </head>
-    <body>
-      <div id="loading">Loading video...</div>
-      <video
-        id="video"
-        controls
-        playsinline
-        preload="auto"
-        src="${videoUrl}"
-        style="display:none;"
-        onloadedmetadata="document.getElementById('loading').style.display='none';this.style.display='block';window.ReactNativeWebView.postMessage('loaded');"
-        onerror="document.getElementById('loading').textContent='Failed to load video';window.ReactNativeWebView.postMessage('error');"
-      ></video>
-    </body>
-    </html>
-  `;
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
 
-  // WebView source with custom headers
-  const webViewSource = {
-    html: videoHTML,
-    baseUrl: videoUrl.substring(0, videoUrl.lastIndexOf('/'))
+  const progressWidth =
+    duration > 0 ? Math.min((currentTime / duration) * 100, 100) : 0;
+
+  const handleVideoPress = () => {
+    setShowControls(prev => {
+      if (!prev) {
+        // Show then auto-hide after 3s
+        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+      }
+      return !prev;
+    });
+  };
+
+  const handlePlayPause = () => {
+    setPaused(p => !p);
+    // Reset auto-hide timer
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+  };
+
+  const handleSeek = (e: any) => {
+    const { locationX } = e.nativeEvent;
+    const seekRatio = Math.max(0, Math.min(locationX / (SCREEN_WIDTH - 48), 1));
+    const seekTime = seekRatio * duration;
+    videoRef.current?.seek(seekTime);
+    setCurrentTime(seekTime);
   };
 
   return (
@@ -118,180 +94,227 @@ export function VideoPlayerModal({
       animationType="fade"
       transparent={false}
       onRequestClose={handleClose}
-      statusBarTranslucent>
-      <StatusBar hidden />
-      <View style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerContent}>
-            <MaterialCommunityIcons name="video" size={20} color="#a6c455" />
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {videoName || 'Video'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={styles.closeButton}
-            onPress={handleClose}
-            activeOpacity={0.7}>
-            <MaterialCommunityIcons name="close" size={24} color="#ffffff" />
-          </TouchableOpacity>
-        </View>
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape']}>
+      <View style={styles.root}>
+        <StatusBar hidden />
 
-        {/* Video Player */}
-        <View style={styles.videoContainer}>
-          {error ? (
-            <View style={styles.errorContainer}>
-              <MaterialCommunityIcons
-                name="alert-circle"
-                size={64}
-                color="#d97070"
-              />
-              <Text style={styles.errorText}>{error}</Text>
-              <Text style={styles.errorHint}>
-                The video requires authentication. Try playing it from a browser or downloading it.
-              </Text>
-              <TouchableOpacity
-                style={styles.closeButtonBottom}
-                onPress={handleClose}>
-                <Text style={styles.closeButtonText}>CLOSE</Text>
-              </TouchableOpacity>
-            </View>
-          ) : sessionToken ? (
-            <WebView
-              source={webViewSource}
-              style={styles.webview}
-              allowsFullscreenVideo={true}
-              allowsInlineMediaPlayback={true}
-              mediaPlaybackRequiresUserAction={false}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              mixedContentMode="always"
-              sharedCookiesEnabled={true}
-              thirdPartyCookiesEnabled={true}
-              onMessage={(event) => {
-                const message = event.nativeEvent.data;
-                console.log('[VideoPlayerModal] Message:', message);
-                if (message === 'loaded') {
-                  setLoading(false);
-                } else if (message === 'error') {
-                  setError('Video playback failed. The video may require authentication that WebView cannot provide.');
-                  setLoading(false);
-                }
-              }}
-              onError={(syntheticEvent) => {
-                const { nativeEvent } = syntheticEvent;
-                console.error('[VideoPlayerModal] WebView error:', nativeEvent);
-                setError('WebView failed to load');
+        {/* Video */}
+        {videoUrl ? (
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.videoWrapper}
+            onPress={handleVideoPress}>
+            <Video
+              ref={videoRef}
+              source={{ uri: videoUrl }}
+              style={styles.video}
+              resizeMode="contain"
+              paused={paused}
+              muted={muted}
+              repeat={false}
+              onLoad={data => {
+                setDuration(data.duration);
                 setLoading(false);
               }}
-              onLoadEnd={() => {
-                console.log('[VideoPlayerModal] WebView load end');
+              onProgress={data => setCurrentTime(data.currentTime)}
+              onEnd={() => setPaused(true)}
+              onError={err => {
+                console.error('[VideoPlayerModal] Video error:', err);
+                setError('Failed to play video. The file may be corrupted or unsupported.');
+                setLoading(false);
               }}
             />
-          ) : (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#a6c455" />
-              <Text style={styles.loadingText}>INITIALIZING...</Text>
+
+            {/* Loading spinner */}
+            {loading && !error && (
+              <View style={styles.overlay}>
+                <ActivityIndicator size="large" color="#a6c455" />
+                <Text style={styles.loadingText}>LOADING VIDEO...</Text>
+              </View>
+            )}
+
+            {/* Error state */}
+            {error && (
+              <View style={styles.overlay}>
+                <MaterialCommunityIcons name="alert-circle" size={64} color="#d97070" />
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        ) : null}
+
+        {/* Controls overlay */}
+        {showControls && !loading && !error && (
+          <View style={styles.controlsContainer} pointerEvents="box-none">
+            {/* Top bar */}
+            <View style={styles.topBar}>
+              <MaterialCommunityIcons name="video" size={18} color="#a6c455" />
+              <Text style={styles.videoTitle} numberOfLines={1}>
+                {videoName || 'Video'}
+              </Text>
+              <TouchableOpacity onPress={handleClose} style={styles.iconBtn}>
+                <MaterialCommunityIcons name="close" size={26} color="#fff" />
+              </TouchableOpacity>
             </View>
-          )}
-          {loading && !error && sessionToken && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#a6c455" />
-              <Text style={styles.loadingText}>LOADING VIDEO...</Text>
+
+            {/* Bottom bar */}
+            <View style={styles.bottomBar}>
+              {/* Play/Pause */}
+              <TouchableOpacity onPress={handlePlayPause} style={styles.iconBtn}>
+                <MaterialCommunityIcons
+                  name={paused ? 'play-circle' : 'pause-circle'}
+                  size={40}
+                  color="#a6c455"
+                />
+              </TouchableOpacity>
+
+              {/* Seek bar */}
+              <TouchableOpacity
+                activeOpacity={1}
+                style={styles.seekBarContainer}
+                onPress={handleSeek}>
+                <View style={styles.seekBarBg}>
+                  <View style={[styles.seekBarFill, { width: `${progressWidth}%` }]} />
+                </View>
+              </TouchableOpacity>
+
+              {/* Time */}
+              <Text style={styles.timeText}>
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </Text>
+
+              {/* Mute */}
+              <TouchableOpacity onPress={() => setMuted(m => !m)} style={styles.iconBtn}>
+                <MaterialCommunityIcons
+                  name={muted ? 'volume-off' : 'volume-high'}
+                  size={22}
+                  color="#fff"
+                />
+              </TouchableOpacity>
             </View>
-          )}
-        </View>
+          </View>
+        )}
+
+        {/* Fallback close button when controls hidden */}
+        {!showControls && (
+          <TouchableOpacity style={styles.hiddenClose} onPress={handleVideoPress} />
+        )}
+
+        {/* Close button when loading or error */}
+        {(loading || error) && (
+          <TouchableOpacity style={styles.loadingClose} onPress={handleClose}>
+            <MaterialCommunityIcons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+        )}
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#000',
   },
-  header: {
-    flexDirection: 'row',
+  videoWrapper: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#1a1a1a',
-    borderBottomWidth: 2,
-    borderBottomColor: '#4d5d30',
   },
-  headerContent: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  video: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
-  headerTitle: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-    flex: 1,
-  },
-  closeButton: {
-    padding: 4,
-  },
-  videoContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  webview: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  loadingOverlay: {
+  overlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    gap: 12,
   },
   loadingText: {
     color: '#a6c455',
     fontSize: 12,
-    marginTop: 12,
-    letterSpacing: 1,
-    fontWeight: '600',
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
+    letterSpacing: 1.5,
+    fontWeight: '700',
   },
   errorText: {
     color: '#d97070',
-    fontSize: 14,
-    marginTop: 16,
-    marginBottom: 12,
-    textAlign: 'center',
+    fontSize: 13,
     letterSpacing: 0.5,
-    fontWeight: 'bold',
-  },
-  errorHint: {
-    color: '#999',
-    fontSize: 12,
-    marginBottom: 24,
+    fontWeight: '600',
     textAlign: 'center',
-    lineHeight: 18,
+    paddingHorizontal: 32,
+    marginTop: 8,
   },
-  closeButtonBottom: {
-    backgroundColor: '#4d5d30',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: '#5a6b38',
+  controlsContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'space-between',
   },
-  closeButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 1,
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 8 : 16,
+    paddingBottom: 12,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  videoTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  bottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 24,
+    paddingTop: 12,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  iconBtn: {
+    padding: 4,
+  },
+  seekBarContainer: {
+    flex: 1,
+    paddingVertical: 10,
+  },
+  seekBarBg: {
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  seekBarFill: {
+    height: '100%',
+    backgroundColor: '#a6c455',
+    borderRadius: 2,
+  },
+  timeText: {
+    color: '#ccc',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    minWidth: 80,
+    textAlign: 'right',
+  },
+  hiddenClose: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  loadingClose: {
+    position: 'absolute',
+    top: StatusBar.currentHeight ? StatusBar.currentHeight + 8 : 16,
+    right: 16,
+    padding: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 20,
   },
 });

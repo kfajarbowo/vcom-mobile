@@ -1,7 +1,7 @@
 import React from 'react';
-import {View, Text, ActivityIndicator, StyleSheet} from 'react-native';
-import {useLicenseStore} from '../store/licenseStore';
-import {LicenseActivationScreen} from '../screens/LicenseActivationScreen';
+import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { useLicenseStore } from '../store/licenseStore';
+import { LicenseActivationScreen } from '../screens/LicenseActivationScreen';
 
 interface LicenseGateProps {
   children: React.ReactNode;
@@ -14,9 +14,11 @@ interface LicenseGateProps {
  * Shows loading screen while checking license status.
  * Shows activation screen if no valid license found.
  * Renders children (app content) if license is valid.
+ *
+ * TESTING MODE: Currently disabled - bypasses license check
  */
-export function LicenseGate({children}: LicenseGateProps) {
-  const {isLicenseValid, isLoading, hasCheckedLicense} = useLicenseStore();
+export function LicenseGate({ children }: LicenseGateProps) {
+  const { isLicenseValid, isLoading, hasCheckedLicense } = useLicenseStore();
 
   // Show loading screen while checking license
   if (isLoading || !hasCheckedLicense) {
@@ -35,6 +37,7 @@ export function LicenseGate({children}: LicenseGateProps) {
 
   // Render app content if license is valid
   return <>{children}</>;
+
 }
 
 const styles = StyleSheet.create({

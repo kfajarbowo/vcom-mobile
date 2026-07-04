@@ -7,11 +7,11 @@ import {
   MediaStreamTrack,
 } from 'react-native-webrtc';
 import InCallManager from 'react-native-incall-manager';
-import {websocketService} from './websocket';
-import {useCallStore, CallType} from '../store/callStore';
-import {useAuthStore} from '../store/authStore';
-import {requestCameraAndMicrophonePermissions, requestMicrophonePermission} from '../utils/permissions';
-import {ICE_SERVERS, getMediaConstraints, getInCallManagerOptions} from './webrtcConfig';
+import { websocketService } from './websocket';
+import { useCallStore, CallType } from '../store/callStore';
+import { useAuthStore } from '../store/authStore';
+import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
+import { getIceServers, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
 
 /**
  * OneOnOneCallService
@@ -61,7 +61,8 @@ export class OneOnOneCallService {
     this.pendingIceCandidates = [];
     console.log('[WebRTC 1:1] Cleared pending ICE candidates');
 
-    this.peerConnection = new RTCPeerConnection(ICE_SERVERS);
+    const iceServers = await getIceServers();
+    this.peerConnection = new RTCPeerConnection(iceServers as any);
     console.log('[WebRTC 1:1] Created fresh peer connection');
 
     // Handle ICE candidates
@@ -74,6 +75,7 @@ export class OneOnOneCallService {
             type: 'webrtc_ice_candidate',
             payload: {
               callId: callState.callId,
+              targetUserId: callState.isIncoming ? callState.callerUserId : callState.receiverUserId,
               candidate: {
                 candidate: event.candidate.candidate,
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
@@ -91,6 +93,28 @@ export class OneOnOneCallService {
       console.log('[WebRTC 1:1] Track enabled:', event.track.enabled);
       console.log('[WebRTC 1:1] Track muted:', event.track.muted);
       console.log('[WebRTC 1:1] Track readyState:', event.track.readyState);
+
+      // Handle track mute/unmute events for video
+      if (event.track.kind === 'video') {
+        // Set initial state
+        useCallStore.getState().setRemoteVideoEnabled(event.track.enabled && !event.track.muted);
+
+        event.track.onmute = () => {
+          console.log('[WebRTC 1:1] Remote video track muted');
+          useCallStore.getState().setRemoteVideoEnabled(false);
+        };
+
+        event.track.onunmute = () => {
+          console.log('[WebRTC 1:1] Remote video track unmuted');
+          useCallStore.getState().setRemoteVideoEnabled(true);
+        };
+
+        // Also listen for ended event
+        event.track.onended = () => {
+          console.log('[WebRTC 1:1] Remote video track ended');
+          useCallStore.getState().setRemoteVideoEnabled(false);
+        };
+      }
 
       if (event.streams && event.streams[0]) {
         const remoteStream = event.streams[0];
@@ -132,23 +156,21 @@ export class OneOnOneCallService {
     };
   }
 
-  // Get user media (camera/microphone)
+  // Get user media (camera/microphone) — always requests both
   async getUserMedia(callType: CallType): Promise<MediaStream> {
     console.log('[WebRTC 1:1] Getting user media:', callType);
 
     // Longer delay to ensure previous stream cleanup is complete on mobile
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // Request permissions first
-    const hasPermissions = callType === 'video'
-      ? await requestCameraAndMicrophonePermissions()
-      : await requestMicrophonePermission();
+    // Always request camera + mic permissions (unified call UI)
+    const hasPermissions = await requestCameraAndMicrophonePermissions();
 
     if (!hasPermissions) {
       throw new Error('Camera/Microphone permissions not granted');
     }
 
-    const constraints = getMediaConstraints(callType);
+    const constraints = getMediaConstraints();
 
     try {
       const stream = await mediaDevices.getUserMedia(constraints);
@@ -156,6 +178,13 @@ export class OneOnOneCallService {
       console.log('[WebRTC 1:1] Stream ID:', stream.id);
       console.log('[WebRTC 1:1] Audio tracks:', stream.getAudioTracks().length);
       console.log('[WebRTC 1:1] Video tracks:', stream.getVideoTracks().length);
+
+      // Camera state based on call type:
+      // - video calls: camera ON by default
+      // - audio calls: camera OFF by default (can be enabled via video button)
+      const shouldEnableVideo = callType === 'video';
+      stream.getVideoTracks().forEach(track => { track.enabled = shouldEnableVideo; });
+      useCallStore.setState({ isVideoEnabled: shouldEnableVideo });
 
       // Log audio track details
       stream.getAudioTracks().forEach((track, index) => {
@@ -165,6 +194,18 @@ export class OneOnOneCallService {
           muted: track.muted,
           readyState: track.readyState,
         });
+      });
+
+      // Log video track details including actual resolution selected by the camera
+      stream.getVideoTracks().forEach((track, index) => {
+        const settings = (track as any).getSettings ? (track as any).getSettings() : {};
+        console.log(`[WebRTC 1:1] Video track ${index}:`, {
+          id: track.id,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+        });
+        console.log(`[WebRTC 1:1] Video track ${index} settings:`, JSON.stringify(settings));
       });
 
       useCallStore.getState().setLocalStream(stream);
@@ -198,11 +239,11 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session with speaker enabled
+      // Start audio session — earpiece by default (camera starts off)
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(true);
-      console.log('[WebRTC 1:1] Audio session started with speaker enabled');
+      InCallManager.setForceSpeakerphoneOn(false);
+      console.log('[WebRTC 1:1] Audio session started, speaker: false');
 
       // Initialize peer connection
       await this.initializePeerConnection();
@@ -219,16 +260,19 @@ export class OneOnOneCallService {
         this.peerConnection?.addTrack(track, stream);
       });
 
-      // Then add video tracks
+      // Then add video tracks (disabled at track level, but present in SDP)
       stream.getVideoTracks().forEach((track) => {
         console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
 
-      // Create offer
+      // Boost video bitrate to prevent blurriness on low-end devices
+      await this.boostVideoBitrate();
+
+      // Create offer — always receive video for unified call UI
       const offer = await this.peerConnection!.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: callType === 'video',
+        offerToReceiveVideo: true,
       });
 
       await this.peerConnection!.setLocalDescription(offer);
@@ -236,7 +280,7 @@ export class OneOnOneCallService {
 
       // Send offer via WebSocket
       const callState = useCallStore.getState();
-      const {user} = useAuthStore.getState();
+      const { user } = useAuthStore.getState();
 
       // First, send initiate_call to notify recipient
       websocketService.send({
@@ -303,14 +347,23 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session with speaker enabled
+      // Save ICE candidates received while ringing (before peer connection was created).
+      // initializePeerConnection() clears pendingIceCandidates, so we must preserve them.
+      const savedIceCandidates = [...this.pendingIceCandidates];
+      console.log('[WebRTC 1:1] Saved', savedIceCandidates.length, 'ICE candidates received while ringing');
+
+      // Start audio session — earpiece by default (camera starts off)
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(true);
-      console.log('[WebRTC 1:1] Audio session started with speaker enabled');
+      InCallManager.setForceSpeakerphoneOn(false);
+      console.log('[WebRTC 1:1] Audio session started, speaker: false');
 
-      // Initialize peer connection
+      // Initialize peer connection (this clears pendingIceCandidates)
       await this.initializePeerConnection();
+
+      // Restore saved ICE candidates so they can be added after remote description is set
+      this.pendingIceCandidates = savedIceCandidates;
+      console.log('[WebRTC 1:1] Restored', savedIceCandidates.length, 'saved ICE candidates');
 
       // Get user media
       const stream = await this.getUserMedia(callType);
@@ -330,6 +383,9 @@ export class OneOnOneCallService {
         this.peerConnection?.addTrack(track, stream);
       });
 
+      // Boost video bitrate to prevent blurriness on low-end devices
+      await this.boostVideoBitrate();
+
       // Set remote description (offer)
       await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
 
@@ -340,7 +396,7 @@ export class OneOnOneCallService {
 
       // Get call state
       const callState = useCallStore.getState();
-      const {user} = useAuthStore.getState();
+      const { user } = useAuthStore.getState();
 
       // Send accept_call message to server to notify the caller
       websocketService.send({
@@ -412,6 +468,31 @@ export class OneOnOneCallService {
       }
     } catch (error) {
       console.error('[WebRTC 1:1] Error handling ICE candidate:', error);
+    }
+  }
+
+  // Boost video sender bitrate to prevent blurriness
+  // WebRTC defaults to very low bitrate on some devices (especially MediaTek),
+  // causing the video to look blurry even at 720p capture resolution.
+  private async boostVideoBitrate(): Promise<void> {
+    try {
+      if (!this.peerConnection) return;
+
+      const senders = this.peerConnection.getSenders();
+      for (const sender of senders) {
+        if (sender.track?.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps for clear 720p
+          params.encodings[0].maxFramerate = 30;
+          await sender.setParameters(params);
+          console.log('[WebRTC 1:1] ✅ Video bitrate boosted to 1.5 Mbps');
+        }
+      }
+    } catch (error) {
+      console.warn('[WebRTC 1:1] Could not boost video bitrate:', error);
     }
   }
 

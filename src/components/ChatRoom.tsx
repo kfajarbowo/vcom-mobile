@@ -1,10 +1,11 @@
-import React, {useEffect, useState, useRef} from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   FlatList,
   TextInput,
   TouchableOpacity,
+  Pressable,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
@@ -14,19 +15,26 @@ import {
   Modal,
   Alert,
   BackHandler,
+  InteractionManager,
+  Dimensions,
 } from 'react-native';
-import {launchImageLibrary, launchCamera} from 'react-native-image-picker';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {useChatStore, type Message} from '../store/chatStore';
-import {useAuthStore} from '../store/authStore';
-import {apiRequest, getApiBaseUrl, downloadAndOpenPDF, getSessionToken} from '../services/apiClient';
-import {websocketService} from '../services/websocket';
-import {webrtcService} from '../services/webrtcService';
-import {useCallStore} from '../store/callStore';
-import {openPermissionSettings} from '../utils/permissions';
-import {VideoPlayerModal} from './VideoPlayerModal';
-import {ImageViewerModal} from './ImageViewerModal';
+import { useChatStore, type Message } from '../store/chatStore';
+import { useAuthStore } from '../store/authStore';
+import { apiRequest, getApiBaseUrl, downloadAndOpenPDF, downloadAndOpenDocument, getSessionToken } from '../services/apiClient';
+import { websocketService } from '../services/websocket';
+import { webrtcService } from '../services/webrtcService';
+import { useCallStore } from '../store/callStore';
+import { openPermissionSettings, requestCameraPermission, requestCameraAndVideoPermissions } from '../utils/permissions';
+import { VideoPlayerModal } from './VideoPlayerModal';
+import { ImageViewerModal } from './ImageViewerModal';
+import { VoiceNoteRecorder } from './VoiceNoteRecorder';
+import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import RNFetchBlob from 'rn-fetch-blob';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -43,8 +51,9 @@ export function ChatRoom({
   otherUserId,
   onBack,
 }: ChatRoomProps) {
-  const {user} = useAuthStore();
+  const { user } = useAuthStore();
   const setMessages = useChatStore((state) => state.setMessages);
+  const addMessage = useChatStore((state) => state.addMessage);
 
   // Subscribe to call state to check for active group calls
   const callState = useCallStore((state) => ({
@@ -53,15 +62,8 @@ export function ChatRoom({
     conversationId: state.conversationId,
   }));
 
-  // Debug: Log call state to see if rejoin button should show
-  console.log('[ChatRoom] Call State Check:', {
-    isGroup,
-    conversationId,
-    callStatus: callState.status,
-    callIsGroupCall: callState.isGroupCall,
-    callConversationId: callState.conversationId,
-    shouldShowRejoin: isGroup && callState.status === 'active' && callState.isGroupCall && callState.conversationId === conversationId
-  });
+  // Server-side active group call state for rejoin feature
+  const [activeGroupCall, setActiveGroupCall] = useState<{ callId: string, participants: number[] } | null>(null);
 
   const [messageText, setMessageText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -69,7 +71,8 @@ export function ChatRoom({
   const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const [baseUrl, setBaseUrl] = useState<string>('');
-  const [messageMenuVisible, setMessageMenuVisible] = useState<number | null>(null);
+  const [messageMenuVisible, setMessageMenuVisible] = useState<boolean>(false);
+  const [selectedMenuMessage, setSelectedMenuMessage] = useState<Message | null>(null);
   const [forwardDialogVisible, setForwardDialogVisible] = useState(false);
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
   const [forwardConversations, setForwardConversations] = useState<any[]>([]);
@@ -78,14 +81,39 @@ export function ChatRoom({
   const [conversationMembers, setConversationMembers] = useState<any[]>([]);
   const [displayName, setDisplayName] = useState<string>(conversationName);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
-  const [selectedVideo, setSelectedVideo] = useState<{url: string; name: string} | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<{ url: string; name: string } | null>(null);
   const [imageViewerVisible, setImageViewerVisible] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<{url: string; name: string} | null>(null);
+  const [selectedImage, setSelectedImage] = useState<{ url: string; name: string } | null>(null);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [infoModalVisible, setInfoModalVisible] = useState(false);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
+  const [otherUserOnline, setOtherUserOnline] = useState<boolean>(false);
+  const [viewingRepliedMessage, setViewingRepliedMessage] = useState<Message | null>(null);
+  const [addMemberModalVisible, setAddMemberModalVisible] = useState(false);
+  const [availableUsersToAdd, setAvailableUsersToAdd] = useState<any[]>([]);
+  const [selectedUsersToAdd, setSelectedUsersToAdd] = useState<number[]>([]);
+  const [isLoadingUsersToAdd, setIsLoadingUsersToAdd] = useState(false);
+  const [isAddingMembers, setIsAddingMembers] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [addMemberSearchQuery, setAddMemberSearchQuery] = useState('');
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [failedAttachment, setFailedAttachment] = useState<any>(null);
+  const [sendingAttachmentType, setSendingAttachmentType] = useState<string | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [playingAudioId, setPlayingAudioId] = useState<number | null>(null);
+  const [audioProgress, setAudioProgress] = useState<string>('00:00');
+  const [audioDuration, setAudioDuration] = useState<string>('00:00');
+  const [audioProgressPercent, setAudioProgressPercent] = useState(0);
+  const audioPlayerRef = useRef(new AudioRecorderPlayer());
+  const baseUrlRef = useRef('');
+  const sessionTokenRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const hasScrolledToInitialPosition = useRef(false);
+  const isJumpingToMessage = useRef(false);
+  const isNearBottom = useRef(true); // Track if user is scrolled near bottom
+  const messageRefsMap = useRef<Map<number, View>>(new Map()); // messageId -> View ref
 
   // Subscribe to messages for current conversation - this will trigger re-render when messages change!
   const messages = useChatStore((state) =>
@@ -99,13 +127,54 @@ export function ChatRoom({
     state.pagination.get(conversationId)
   );
 
-  // Load base URL for attachment display
+  // Load base URL and session token for attachment display
   useEffect(() => {
     getApiBaseUrl().then((url) => {
       console.log('[ChatRoom] Base URL loaded:', url);
       setBaseUrl(url);
+      baseUrlRef.current = url;
+    });
+    getSessionToken().then((token) => {
+      setSessionToken(token);
+      sessionTokenRef.current = token;
     });
   }, []);
+
+  // Query server for active group call on this conversation (rejoin feature)
+  // Re-checks when callState.status changes (e.g. user leaves call → status goes to 'idle')
+  useEffect(() => {
+    if (!isGroup) return;
+
+    const checkActiveCall = async () => {
+      try {
+        const result = await apiRequest<{ callId: string, participants: number[] } | null>(
+          `/api/conversations/${conversationId}/active-call`
+        );
+        setActiveGroupCall(result || null);
+      } catch (e) {
+        console.warn('[ChatRoom] Error checking active call:', e);
+      }
+    };
+
+    checkActiveCall();
+
+    // Listen for group call events to update the active call state
+    const removeHandler = websocketService.addMessageHandler((message) => {
+      if (
+        message.type === 'group_call_participants_update' ||
+        message.type === 'group_call_ended' ||
+        message.type === 'group_call_initiated' ||
+        message.type === 'group_call_user_left' ||
+        message.type === 'incoming_group_call' ||
+        message.type === 'participant_left' ||
+        message.type === 'participant_joined'
+      ) {
+        checkActiveCall();
+      }
+    });
+
+    return removeHandler;
+  }, [isGroup, conversationId, callState.status]);
 
   // Handle hardware back button on Android
   useEffect(() => {
@@ -117,28 +186,156 @@ export function ChatRoom({
     return () => backHandler.remove();
   }, [onBack]);
 
-  // Scroll to unread messages or bottom on initial load
+  // Track other user's online status for direct chats
+  useEffect(() => {
+    if (isGroup) return;
+
+    // Get the other member from conversationMembers (includes status)
+    if (conversationMembers.length >= 2) {
+      const otherMember = conversationMembers.find((m: any) => m.userId !== user?.id);
+      if (otherMember) {
+        console.log('[ChatRoom] Other member found:', otherMember.callsign, 'status:', otherMember.status);
+        setOtherUserOnline(otherMember.status === 'online');
+      }
+    }
+  }, [isGroup, conversationMembers, user?.id]);
+
+  // Subscribe to real-time status updates
+  useEffect(() => {
+    if (isGroup) return;
+
+    // Get the other user's ID
+    let targetUserId = otherUserId;
+    if (!targetUserId && conversationMembers.length >= 2) {
+      const otherMember = conversationMembers.find((m: any) => m.userId !== user?.id);
+      targetUserId = otherMember?.userId;
+    }
+
+    if (!targetUserId) return;
+
+    console.log('[ChatRoom] Subscribing to status updates for userId:', targetUserId);
+
+    const unsubscribe = websocketService.addMessageHandler((message) => {
+      // Convert to numbers for consistent comparison
+      if (message.type === 'user_status' && Number(message.payload.userId) === Number(targetUserId)) {
+        setOtherUserOnline(message.payload.status === 'online');
+      }
+    });
+
+    return () => unsubscribe();
+  }, [isGroup, otherUserId, conversationMembers, user?.id]);
+
+  // Fetch initial mute status from conversations list data
+  useEffect(() => {
+    const fetchMuteStatus = async () => {
+      try {
+        const conversations = await apiRequest('/api/conversations');
+        const conv = conversations?.find?.((c: any) => Number(c.id) === Number(conversationId));
+        if (conv) {
+          setIsMuted(!!conv.isMuted);
+        }
+      } catch (err) {
+        console.warn('[ChatRoom] Failed to fetch mute status:', err);
+      }
+    };
+    fetchMuteStatus();
+  }, [conversationId]);
+
+  const handleToggleMute = async () => {
+    try {
+      const newMuted = !isMuted;
+      setIsMuted(newMuted); // Optimistic UI
+      await apiRequest(`/api/conversations/${conversationId}/mute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ muted: newMuted }),
+      });
+    } catch (error) {
+      console.error('[ChatRoom] Failed to toggle mute:', error);
+      setIsMuted(!isMuted); // Revert on error
+    }
+  };
+
+  // Audio playback helpers
+  const handlePlayAudio = async (messageId: number, audioUrl: string) => {
+    try {
+      const player = audioPlayerRef.current;
+
+      // If already playing this message, stop
+      if (playingAudioId === messageId) {
+        await player.stopPlayer();
+        player.removePlayBackListener();
+        setPlayingAudioId(null);
+        setAudioProgress('00:00');
+        setAudioProgressPercent(0);
+        return;
+      }
+
+      // Stop any currently playing audio
+      if (playingAudioId !== null) {
+        await player.stopPlayer();
+        player.removePlayBackListener();
+      }
+
+      setPlayingAudioId(messageId);
+      setAudioProgress('00:00');
+      setAudioDuration('00:00');
+      setAudioProgressPercent(0);
+
+      // Download with auth then play local file
+      const token = sessionToken || await getSessionToken();
+      const res = await RNFetchBlob.config({ fileCache: true, appendExt: 'm4a' })
+        .fetch('GET', audioUrl, { 'X-Session-Token': token || '' });
+      const localPath = Platform.OS === 'android' ? `file://${res.path()}` : res.path();
+
+      await player.startPlayer(localPath);
+      player.addPlayBackListener((e: any) => {
+        const current = e.currentPosition;
+        const duration = e.duration;
+        if (duration > 0) {
+          setAudioProgressPercent(current / duration);
+        }
+        setAudioProgress(player.mmssss(Math.floor(current)).substring(0, 5));
+        setAudioDuration(player.mmssss(Math.floor(duration)).substring(0, 5));
+
+        if (current >= duration - 100 && duration > 0) {
+          player.stopPlayer();
+          player.removePlayBackListener();
+          setPlayingAudioId(null);
+          setAudioProgress('00:00');
+          setAudioProgressPercent(0);
+          // Clean up temp file
+          RNFetchBlob.fs.unlink(res.path()).catch(() => { });
+        }
+      });
+    } catch (error) {
+      console.error('[ChatRoom] Audio playback error:', error);
+      setPlayingAudioId(null);
+    }
+  };
+
+  // Clean up audio player on unmount
+  useEffect(() => {
+    return () => {
+      audioPlayerRef.current.stopPlayer().catch(() => { });
+      audioPlayerRef.current.removePlayBackListener();
+    };
+  }, []);
+
+  // Scroll to bottom on initial load — use InteractionManager for reliable timing
   useEffect(() => {
     if (!isLoading && messages.length > 0 && !hasScrolledToInitialPosition.current) {
-      // Find first unread message that's not sent by current user
-      const firstUnreadIndex = messages.findIndex(
-        (msg) => !msg.isRead && Number(msg.senderId) !== Number(user?.id)
-      );
-
-      setTimeout(() => {
-        if (firstUnreadIndex !== -1) {
-          console.log('[ChatRoom] Scrolling to first unread message at index:', firstUnreadIndex);
-          // Note: Since we're using grouped messages in FlatList, we scroll to end for now
-          // A more sophisticated implementation would calculate the group index
-          flatListRef.current?.scrollToEnd({animated: false});
-        } else {
-          console.log('[ChatRoom] No unread messages, scrolling to bottom');
-          flatListRef.current?.scrollToEnd({animated: false});
-        }
-        hasScrolledToInitialPosition.current = true;
-      }, 100);
+      // Use InteractionManager to wait for layout, then scroll
+      const task = InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          console.log('[ChatRoom] Scrolling to bottom on initial load');
+          flatListRef.current?.scrollToEnd({ animated: false });
+          hasScrolledToInitialPosition.current = true;
+        }, 150);
+      });
+      return () => task.cancel();
     }
-  }, [isLoading, messages.length, user?.id]);
+  }, [isLoading, messages.length]);
 
   // Load conversation members (for determining call recipient and sender names)
   useEffect(() => {
@@ -196,18 +393,38 @@ export function ChatRoom({
     const removeHandler = websocketService.addMessageHandler((message) => {
       // Only log and process new_message types (ignore call/status messages - they're handled by CallManager)
       if (message.type === 'new_message') {
-        console.log('[ChatRoom] WebSocket message received:', {
-          type: message.type,
-          payloadConversationId: message.payload?.conversationId,
-          currentConversationId: conversationId,
-          matches: message.payload?.conversationId === conversationId,
-        });
+        // Convert to numbers for consistent comparison (WebSocket may send strings)
+        const payloadConvId = Number(message.payload?.conversationId);
+        const currentConvId = Number(conversationId);
+        const payloadSenderId = Number(message.payload?.senderId);
+        const currentUserId = Number(user?.id);
 
-        if (message.payload.conversationId === conversationId) {
-          console.log('[ChatRoom] ✅ Message matches current conversation, reloading...');
+        if (payloadConvId === currentConvId) {
+          // Skip reload for own messages - the send handler already refreshes
+          if (payloadSenderId === currentUserId) {
+            console.log('[ChatRoom] ⏭️ Skipping reload for own sent message');
+            return;
+          }
+          console.log('[ChatRoom] ✅ Message from other user, reloading...');
+          loadMessages(false).then(() => {
+            // Only scroll to bottom if user was already near the bottom
+            if (isNearBottom.current) {
+              setTimeout(() => {
+                flatListRef.current?.scrollToEnd({ animated: false });
+              }, 100);
+            }
+          });
+        }
+      }
+
+      // Handle real-time message deletion (delete for everyone)
+      if (message.type === 'message_deleted') {
+        const payloadConvId = Number(message.payload?.conversationId);
+        const currentConvId = Number(conversationId);
+
+        if (payloadConvId === currentConvId) {
+          console.log('[ChatRoom] ✅ Message deleted by other user, reloading...');
           loadMessages(false);
-        } else {
-          console.log('[ChatRoom] ⚠️ Message for different conversation');
         }
       }
     });
@@ -217,7 +434,7 @@ export function ChatRoom({
       removeHandler();
       useChatStore.getState().setCurrentConversationId(null);
     };
-  }, [conversationId, conversationMembers]);
+  }, [conversationId, conversationMembers, user?.id]);
 
   const loadMessages = async (showLoading: boolean = false, loadMore: boolean = false) => {
     try {
@@ -235,49 +452,11 @@ export function ChatRoom({
 
       // Set loading state in pagination
       if (loadMore) {
-        useChatStore.getState().setPaginationInfo(conversationId, {isLoading: true});
+        useChatStore.getState().setPaginationInfo(conversationId, { isLoading: true });
       }
 
-      const limit = 15;
+      const limit = 10;
       let offset = loadMore ? (paginationInfo?.offset || 0) : 0;
-
-      // For initial load, check if there are unread messages
-      // If yes, we need to load from the last 15 read messages
-      if (!loadMore && offset === 0) {
-        console.log('[ChatRoom] Initial load - checking for unread messages...');
-
-        // First, get total count and check for unread messages
-        // We need to call without pagination to get all messages for checking
-        const checkResponse = await apiRequest(
-          `/api/conversations/${conversationId}/messages`
-        );
-
-        if (checkResponse) {
-          const allMessages = checkResponse?.messages || checkResponse || [];
-          const total = checkResponse?.total || allMessages.length || 0;
-
-          // Find first unread message that's not sent by current user
-          const firstUnreadIndex = allMessages.findIndex(
-            (msg: any) => !msg.isRead && Number(msg.senderId) !== Number(user?.id)
-          );
-
-          console.log('[ChatRoom] Total messages:', total, 'First unread index:', firstUnreadIndex);
-
-          if (firstUnreadIndex !== -1 && firstUnreadIndex >= limit) {
-            // There are unread messages beyond the first 15
-            // Calculate offset to load the last 15 read messages
-            // If there are 50 messages total and first unread is at index 40,
-            // we want to load messages from index 25-39 (15 read messages before the unread)
-            const readMessagesCount = firstUnreadIndex;
-            offset = Math.max(0, total - readMessagesCount - limit);
-
-            console.log('[ChatRoom] Unread messages detected. Loading from offset:', offset);
-            console.log('[ChatRoom] This will show last 15 read messages');
-          } else {
-            console.log('[ChatRoom] No unread messages or fewer than 15 read messages. Will load last 15.');
-          }
-        }
-      }
 
       console.log('[ChatRoom] Loading messages for conversation:', conversationId, 'limit:', limit, 'offset:', offset, 'loadMore:', loadMore);
 
@@ -295,6 +474,10 @@ export function ChatRoom({
       console.log('[ChatRoom] Received messages:', data?.length || 0, 'total:', total, 'hasMore:', hasMore);
 
       const formattedMessages: Message[] = (Array.isArray(data) ? data : []).map((msg: any, index: number) => {
+        // Convert IDs to numbers for type consistency
+        const msgId = Number(msg.id);
+        const msgSenderId = Number(msg.senderId);
+
         // Look up sender name from conversationMembers
         let senderName = 'Unknown';
 
@@ -302,14 +485,15 @@ export function ChatRoom({
           console.log('[ChatRoom] ===== SENDER LOOKUP DEBUG =====');
           console.log('[ChatRoom] conversationMembers available:', !!conversationMembers);
           console.log('[ChatRoom] conversationMembers length:', conversationMembers?.length);
-          console.log('[ChatRoom] First message senderId:', msg.senderId, 'type:', typeof msg.senderId);
+          console.log('[ChatRoom] First message senderId:', msgSenderId, 'type:', typeof msgSenderId);
           console.log('[ChatRoom] conversationMembers:', JSON.stringify(conversationMembers, null, 2));
         }
 
         if (conversationMembers && Array.isArray(conversationMembers)) {
-          const member = conversationMembers.find(m => m.userId === msg.senderId);
+          // Use Number() for comparison to ensure type consistency
+          const member = conversationMembers.find(m => Number(m.userId) === msgSenderId);
           if (index === 0) {
-            console.log('[ChatRoom] Found member for senderId', msg.senderId, ':', !!member);
+            console.log('[ChatRoom] Found member for senderId', msgSenderId, ':', !!member);
             if (member) {
               console.log('[ChatRoom] Member data:', JSON.stringify(member, null, 2));
             }
@@ -325,8 +509,8 @@ export function ChatRoom({
         }
 
         return {
-          id: msg.id,
-          senderId: msg.senderId,
+          id: msgId,
+          senderId: msgSenderId,
           senderName: senderName,
           content: msg.content,
           timestamp: msg.timestamp || msg.createdAt,
@@ -337,8 +521,9 @@ export function ChatRoom({
           attachmentUrl: msg.attachmentUrl,
           attachmentName: msg.attachmentName,
           attachmentSize: msg.attachmentSize,
-          replyToId: msg.replyToId,
-          forwardedFromId: msg.forwardedFromId,
+          attachmentThumbnailUrl: msg.attachmentThumbnailUrl,
+          replyToId: msg.replyToId ? Number(msg.replyToId) : undefined,
+          forwardedFromId: msg.forwardedFromId ? Number(msg.forwardedFromId) : undefined,
           isDeleted: msg.isDeleted,
         };
       });
@@ -372,19 +557,75 @@ export function ChatRoom({
         });
         console.log('[ChatRoom] Reset unread count to 0 for conversation:', conversationId);
 
-        // Scroll to end after initial load
+        // Scroll to end after load — no animation to avoid Android touch responder lock
         setTimeout(() => {
-          flatListRef.current?.scrollToEnd({animated: !showLoading});
-        }, showLoading ? 300 : 100);
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }, 200);
       }
     } catch (error) {
       console.error('[ChatRoom] Error loading messages:', error);
-      useChatStore.getState().setPaginationInfo(conversationId, {isLoading: false});
+      useChatStore.getState().setPaginationInfo(conversationId, { isLoading: false });
     } finally {
       if (showLoading) {
         setIsLoading(false);
       }
     }
+  };
+
+  // Helper function to get document icon and color based on file type
+  // Infer MIME type from file extension when the picker doesn't provide one
+  const getMimeTypeFromName = (fileName: string | undefined): string | null => {
+    if (!fileName) return null;
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (!ext) return null;
+    const mimeMap: Record<string, string> = {
+      pdf: 'application/pdf',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      txt: 'text/plain',
+      csv: 'text/plain',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+      mp3: 'audio/mpeg',
+      wav: 'audio/wav',
+    };
+    return mimeMap[ext] || null;
+  };
+
+  const getDocumentIcon = (fileName: string | undefined, mimeType: string | undefined): { icon: string; color: string } => {
+    const name = (fileName || '').toLowerCase();
+    const type = (mimeType || '').toLowerCase();
+
+    // PDF
+    if (name.endsWith('.pdf') || type.includes('pdf')) {
+      return { icon: 'file-pdf-box', color: '#d97070' };
+    }
+    // Word documents
+    if (name.endsWith('.doc') || name.endsWith('.docx') || type.includes('msword') || type.includes('wordprocessingml')) {
+      return { icon: 'file-word', color: '#2b579a' };
+    }
+    // Excel spreadsheets
+    if (name.endsWith('.xls') || name.endsWith('.xlsx') || name.endsWith('.csv') || type.includes('excel') || type.includes('spreadsheetml') || type.includes('csv')) {
+      return { icon: 'file-excel', color: '#217346' };
+    }
+    // PowerPoint presentations
+    if (name.endsWith('.ppt') || name.endsWith('.pptx') || type.includes('powerpoint') || type.includes('presentationml')) {
+      return { icon: 'file-powerpoint', color: '#d24726' };
+    }
+    // Text files
+    if (name.endsWith('.txt') || type.includes('text/plain')) {
+      return { icon: 'file-document-outline', color: '#888888' };
+    }
+    // Default document icon
+    return { icon: 'file-document', color: '#7fa6d9' };
   };
 
   const handleAttachment = () => {
@@ -412,11 +653,30 @@ export function ChatRoom({
     );
   };
 
-  const handleCameraPicker = () => {
+  const handleCameraPicker = async () => {
     setAttachmentMenuVisible(false);
+
+    // Request camera permission first
+    const hasPermission = await requestCameraPermission();
+    if (!hasPermission) {
+      Alert.alert(
+        'Permission Required',
+        'VComm needs camera permissions to take photos. Please grant permissions in your device settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => openPermissionSettings(),
+            style: 'default',
+          },
+        ]
+      );
+      return;
+    }
+
     launchCamera(
       {
-        mediaType: 'mixed',
+        mediaType: 'photo',
         quality: 0.8,
         saveToPhotos: true,
       },
@@ -430,9 +690,9 @@ export function ChatRoom({
           } else if (response.errorCode === 'permission') {
             Alert.alert(
               'Permission Required',
-              'VComm needs camera permissions to take photos and videos. Please grant permissions in your device settings.',
+              'VComm needs camera permissions to take photos. Please grant permissions in your device settings.',
               [
-                {text: 'Cancel', style: 'cancel'},
+                { text: 'Cancel', style: 'cancel' },
                 {
                   text: 'Open Settings',
                   onPress: () => openPermissionSettings(),
@@ -443,7 +703,65 @@ export function ChatRoom({
           }
         } else if (response.assets && response.assets[0]) {
           setSelectedAttachment(response.assets[0]);
-          console.log('[ChatRoom] Camera capture selected:', response.assets[0]);
+          console.log('[ChatRoom] Photo capture selected:', response.assets[0]);
+        }
+      }
+    );
+  };
+
+  const handleVideoCameraPicker = async () => {
+    setAttachmentMenuVisible(false);
+
+    // Request camera and microphone permissions first (needed for video recording)
+    const hasPermission = await requestCameraAndVideoPermissions();
+    if (!hasPermission) {
+      Alert.alert(
+        'Permission Required',
+        'VComm needs camera and microphone permissions to record videos. Please grant permissions in your device settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => openPermissionSettings(),
+            style: 'default',
+          },
+        ]
+      );
+      return;
+    }
+
+    launchCamera(
+      {
+        mediaType: 'video',
+        videoQuality: 'high',
+        durationLimit: 60,
+        saveToPhotos: true,
+        cameraType: 'back',
+      },
+      (response) => {
+        if (response.didCancel) {
+          console.log('[ChatRoom] User cancelled video recording');
+        } else if (response.errorCode) {
+          console.error('[ChatRoom] Video Camera Error:', response.errorMessage);
+          if (response.errorCode === 'camera_unavailable') {
+            Alert.alert('Camera Unavailable', 'Camera is not available on this device');
+          } else if (response.errorCode === 'permission') {
+            Alert.alert(
+              'Permission Required',
+              'VComm needs camera and microphone permissions to record videos. Please grant permissions in your device settings.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Open Settings',
+                  onPress: () => openPermissionSettings(),
+                  style: 'default',
+                },
+              ]
+            );
+          }
+        } else if (response.assets && response.assets[0]) {
+          setSelectedAttachment(response.assets[0]);
+          console.log('[ChatRoom] Video capture selected:', response.assets[0]);
         }
       }
     );
@@ -453,17 +771,47 @@ export function ChatRoom({
     setAttachmentMenuVisible(false);
     try {
       const result = await DocumentPicker.pick({
-        type: [DocumentPicker.types.pdf],
+        type: [
+          DocumentPicker.types.pdf,
+          DocumentPicker.types.doc,
+          DocumentPicker.types.docx,
+          DocumentPicker.types.xls,
+          DocumentPicker.types.xlsx,
+          DocumentPicker.types.ppt,
+          DocumentPicker.types.pptx,
+          DocumentPicker.types.plainText,
+          DocumentPicker.types.csv,
+        ],
         copyTo: 'cachesDirectory',
       });
 
       if (result && result[0]) {
         const doc = result[0];
         console.log('[ChatRoom] Document selected:', doc);
+        console.log('[ChatRoom] fileCopyUri:', doc.fileCopyUri, 'uri:', doc.uri);
+
+        let uploadUri = doc.fileCopyUri;
+
+        // If copyTo didn't produce a fileCopyUri (happens with cloud providers
+        // or scoped storage), manually copy the content:// URI to a local cache
+        // file so RNFetchBlob.wrap() can read it. Without this the upload
+        // sends empty data and the file is corrupted.
+        if (!uploadUri && doc.uri && Platform.OS === 'android') {
+          try {
+            const ext = doc.name?.split('.').pop() || '';
+            const cachePath = `${RNFetchBlob.fs.dirs.CacheDir}/upload_${Date.now()}.${ext}`;
+            console.log('[ChatRoom] Copying content URI to cache:', doc.uri, '->', cachePath);
+            await RNFetchBlob.fs.cp(doc.uri, cachePath);
+            uploadUri = cachePath;
+            console.log('[ChatRoom] Copy succeeded, new path:', cachePath);
+          } catch (cpErr) {
+            console.error('[ChatRoom] Failed to copy content URI to cache:', cpErr);
+          }
+        }
 
         // Convert to the same format as image picker
         const attachment = {
-          uri: doc.fileCopyUri || doc.uri,
+          uri: uploadUri || doc.uri,
           type: doc.type,
           fileName: doc.name,
           fileSize: doc.size,
@@ -482,56 +830,92 @@ export function ChatRoom({
   };
 
   const uploadAttachment = async (file: any): Promise<any> => {
+    const uploadUrl = `${await getApiBaseUrl()}/api/attachments/upload`;
+    const sessionToken = await getSessionToken();
+
     try {
-      const formData = new FormData();
-      formData.append('file', {
-        uri: file.uri,
-        type: file.type || 'application/octet-stream',
-        name: file.fileName || 'attachment',
-      } as any);
+      // Normalize file URI for RNFetchBlob — wrap() requires a raw filesystem path.
+      // fileCopyUri from react-native-document-picker is a URI with URL-encoded
+      // special characters (spaces → %20, accents, etc.). The filesystem uses
+      // the real characters, so we must decode before passing to wrap()/stat().
+      let fileUri = file.uri;
+      if (Platform.OS === 'android') {
+        if (fileUri.startsWith('file://')) {
+          fileUri = fileUri.replace('file://', '');
+        } else if (fileUri.startsWith('content://')) {
+          // Last-resort fallback: copy content URI to a cache file so wrap() can read it
+          const ext = (file.fileName || '').split('.').pop() || '';
+          const cachePath = `${RNFetchBlob.fs.dirs.CacheDir}/upload_fallback_${Date.now()}.${ext}`;
+          console.log('[ChatRoom] Fallback: copying content URI to cache:', fileUri, '->', cachePath);
+          await RNFetchBlob.fs.cp(fileUri, cachePath);
+          fileUri = cachePath;
+        }
+        // Decode URL-encoded characters. Wrapped in try-catch because a path
+        // with literal % signs (e.g., "100%.pdf") would throw.
+        try {
+          fileUri = decodeURIComponent(fileUri);
+        } catch {
+          // Path is already plain or has literal % signs
+        }
+      }
 
-      const baseUrl = await getApiBaseUrl();
-      const sessionToken = await getSessionToken();
+      // Verify file exists and has content before uploading
+      try {
+        const stat = await RNFetchBlob.fs.stat(fileUri);
+        if (stat.size === 0) {
+          throw new Error('Selected file is empty (0 bytes)');
+        }
+        console.log('[ChatRoom] File stat: size=' + stat.size + ', path=' + fileUri);
+      } catch (statErr: any) {
+        console.error('[ChatRoom] File stat check failed:', statErr.message);
+        throw new Error('Cannot access selected file. Please try again.');
+      }
 
-      console.log('[ChatRoom] Uploading attachment to:', `${baseUrl}/api/attachments/upload`);
-      console.log('[ChatRoom] File details:', {
-        uri: file.uri,
-        type: file.type,
-        name: file.fileName,
+      console.log('[ChatRoom] Uploading via RNFetchBlob:', uploadUrl);
+
+      const res = await RNFetchBlob.fetch(
+        'POST',
+        uploadUrl,
+        {
+          'X-Session-Token': sessionToken || '',
+          'Content-Type': 'multipart/form-data',
+        },
+        [
+          {
+            name: 'file',
+            filename: file.fileName || 'attachment',
+            type: file.type || getMimeTypeFromName(file.fileName) || 'application/octet-stream',
+            data: RNFetchBlob.wrap(fileUri),
+          },
+        ],
+      ).uploadProgress({ interval: 100 }, (written, total) => {
+        if (total > 0) {
+          const pct = Math.round((written / total) * 100);
+          setUploadProgress(pct);
+        }
       });
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'multipart/form-data',
-      };
+      setUploadProgress(null);
 
-      // Add session token for authentication
-      if (sessionToken) {
-        headers['X-Session-Token'] = sessionToken;
-        console.log('[ChatRoom] Added X-Session-Token header for upload');
+      const status = res.info().status;
+      if (status >= 200 && status < 300) {
+        try {
+          return JSON.parse(res.data);
+        } catch {
+          throw new Error('Invalid upload response');
+        }
       } else {
-        console.warn('[ChatRoom] No session token found for upload');
+        let errorMsg = `Upload failed (${status})`;
+        try {
+          const body = JSON.parse(res.data);
+          if (body.message) errorMsg = body.message;
+        } catch { }
+        throw new Error(errorMsg);
       }
-
-      const response = await fetch(`${baseUrl}/api/attachments/upload`, {
-        method: 'POST',
-        body: formData,
-        headers,
-      });
-
-      console.log('[ChatRoom] Upload response status:', response.status);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[ChatRoom] Upload failed:', errorText);
-        throw new Error(`Failed to upload attachment: ${response.status} ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      console.log('[ChatRoom] Upload successful:', result);
-      return result;
-    } catch (error) {
-      console.error('[ChatRoom] Upload error:', error);
-      throw error;
+    } catch (err: any) {
+      setUploadProgress(null);
+      console.error('[ChatRoom] Upload error details:', err.message, err);
+      throw err;
     }
   };
 
@@ -550,6 +934,7 @@ export function ChatRoom({
       // Upload attachment if selected
       if (selectedAttachment) {
         console.log('[ChatRoom] Uploading attachment...');
+        setSendingAttachmentType(selectedAttachment.type?.split('/')[0] || 'file');
         const uploadResponse = await uploadAttachment(selectedAttachment);
         console.log('[ChatRoom] Upload response:', uploadResponse);
 
@@ -574,6 +959,9 @@ export function ChatRoom({
         messagePayload.attachmentUrl = attachmentData.url;
         messagePayload.attachmentName = attachmentData.name;
         messagePayload.attachmentSize = attachmentData.size;
+        if (attachmentData.thumbnailUrl) {
+          messagePayload.attachmentThumbnailUrl = attachmentData.thumbnailUrl;
+        }
       }
 
       if (replyToMessage) {
@@ -582,63 +970,167 @@ export function ChatRoom({
 
       const response = await apiRequest('/api/messages', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messagePayload),
       });
 
       console.log('[ChatRoom] Message sent successfully:', response);
 
+      // For text-only messages, add immediately for instant feedback
+      // For attachment messages, skip addMessage and let loadMessages bring them
+      // from the server - this prevents stale FlatList closure issues
+      if (response?.id && !attachmentData) {
+        const senderName = user?.callsign || user?.fullName || 'Me';
+        const sentMessage: Message = {
+          id: Number(response.id),
+          senderId: Number(user?.id),
+          senderName,
+          content: response.content || content,
+          timestamp: response.createdAt || new Date().toISOString(),
+          isRead: true,
+          classification: response.classification || 'UNCLASSIFIED',
+          hasAttachment: false,
+          replyToId: replyToMessage?.id,
+        };
+        addMessage(conversationId, sentMessage);
+      }
+
       // Clear attachment and reply
       setSelectedAttachment(null);
       setReplyToMessage(null);
 
-      // Wait a moment before reloading to ensure server has fully processed the message
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      // Reload messages to show the new message (without showing loading spinner)
+      // Sync with server to get the full message list
+      // For attachment messages this is the only way they appear in the list
+      await new Promise(resolve => setTimeout(resolve, attachmentData ? 1500 : 500));
       await loadMessages(false);
+
+      // Scroll to bottom after server sync — no animation to avoid locking touch responder
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
 
     } catch (error: any) {
       console.error('[ChatRoom] Error sending message:', error);
       setMessageText(content);
 
+      // Keep failed attachment for retry
+      if (selectedAttachment) {
+        setFailedAttachment(selectedAttachment);
+      }
+
       // Show user-friendly error message
       const errorMessage = error?.message || 'Failed to send message';
-      if (errorMessage.includes('Network request failed')) {
+      if (errorMessage.includes('Network') || errorMessage.includes('network')) {
         Alert.alert(
           'Network Error',
-          'Unable to connect to the server. Please check your network connection and try again.',
-          [{text: 'OK'}]
-        );
-      } else if (errorMessage.includes('upload attachment')) {
-        Alert.alert(
-          'Upload Failed',
-          'Failed to upload attachment. Please try again or choose a different file.',
-          [{text: 'OK'}]
+          'Unable to connect to the server. Please check your connection.',
+          [
+            { text: 'OK' },
+            selectedAttachment ? { text: 'Retry', onPress: () => sendMessage() } : null,
+          ].filter(Boolean) as any
         );
       } else {
         Alert.alert(
           'Error',
           errorMessage,
-          [{text: 'OK'}]
+          [
+            { text: 'OK' },
+            selectedAttachment ? { text: 'Retry', onPress: () => sendMessage() } : null,
+          ].filter(Boolean) as any
         );
       }
     } finally {
       setIsSending(false);
+      setSendingAttachmentType(null);
+    }
+  };
+
+  const handleSendVoiceNote = async (fileUri: string, duration: number) => {
+    setIsRecordingVoice(false);
+    setIsSending(true);
+    setSendingAttachmentType('audio');
+    try {
+      const file = {
+        uri: fileUri,
+        type: 'audio/mp4',
+        fileName: `voice_note_${Date.now()}.m4a`,
+      };
+      const uploadResponse = await uploadAttachment(file);
+      if (!uploadResponse.success || !uploadResponse.file) {
+        throw new Error('Voice note upload failed');
+      }
+      const attachmentData = uploadResponse.file;
+      const messagePayload: any = {
+        conversationId,
+        content: `Voice note (${duration}s)`,
+        classification: 'UNCLASSIFIED',
+        hasAttachment: true,
+        attachmentType: attachmentData.type,
+        attachmentUrl: attachmentData.url,
+        attachmentName: attachmentData.name,
+        attachmentSize: attachmentData.size,
+      };
+      const response = await apiRequest('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(messagePayload),
+      });
+
+      // Don't add attachment messages locally - let loadMessages bring them
+      // from the server to avoid stale FlatList closure issues
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await loadMessages(false);
+
+      // Scroll to bottom after server sync — no animation to avoid locking touch responder
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    } catch (error: any) {
+      console.error('[ChatRoom] Error sending voice note:', error);
+      Alert.alert('Error', 'Failed to send voice note. Please try again.');
+    } finally {
+      setIsSending(false);
+      setSendingAttachmentType(null);
     }
   };
 
   const handleForwardMessage = async (message: Message) => {
     setMessageToForward(message);
-    setMessageMenuVisible(null);
+    setMessageMenuVisible(false);
     setForwardDialogVisible(true);
 
-    // Load conversations for forwarding
+    // Load conversations and users for forwarding
     try {
-      const data = await apiRequest('/api/conversations');
-      // Filter out current conversation
-      const otherConversations = (Array.isArray(data) ? data : [])
-        .filter((conv: any) => conv.id !== conversationId);
+      const [conversationsData, usersData] = await Promise.all([
+        apiRequest('/api/conversations'),
+        apiRequest('/api/all-users'),
+      ]);
+
+      // Filter out current conversation and map proper display names
+      const otherConversations = (Array.isArray(conversationsData) ? conversationsData : [])
+        .filter((conv: any) => conv.id !== conversationId)
+        .map((conv: any) => {
+          // For direct chats, find the other user's name
+          if (!conv.isGroup && conv.name?.startsWith('Direct Chat')) {
+            const match = conv.name.match(/Direct Chat (\d+)-(\d+)/);
+            if (match && user) {
+              const [_, id1, id2] = match;
+              const partnerId = parseInt(id1) === user.id ? parseInt(id2) : parseInt(id1);
+              const partner = usersData.find((u: any) => u.id === partnerId);
+              if (partner) {
+                return {
+                  ...conv,
+                  displayName: partner.callsign || partner.fullName || conv.name,
+                };
+              }
+            }
+          }
+          return {
+            ...conv,
+            displayName: conv.name || 'Unnamed',
+          };
+        });
+
       setForwardConversations(otherConversations);
     } catch (error) {
       console.error('[ChatRoom] Error loading conversations for forward:', error);
@@ -655,19 +1147,21 @@ export function ChatRoom({
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ conversationId: targetConversationId }),
+        body: JSON.stringify({ targetConversationIds: [targetConversationId] }),
       });
       setForwardDialogVisible(false);
       setMessageToForward(null);
+      Alert.alert('Success', 'Message forwarded successfully');
       console.log('[ChatRoom] Message forwarded successfully');
     } catch (error) {
       console.error('[ChatRoom] Error forwarding message:', error);
+      Alert.alert('Error', 'Failed to forward message');
     }
   };
 
   const handleDeleteMessage = (message: Message) => {
     setMessageToDelete(message);
-    setMessageMenuVisible(null);
+    setMessageMenuVisible(false);
     setDeleteDialogVisible(true);
   };
 
@@ -686,7 +1180,7 @@ export function ChatRoom({
         Alert.alert(
           'Connection Not Ready',
           'Please wait a moment for the connection to establish, then try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -728,7 +1222,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           `Unable to determine call recipient. Members: ${conversationMembers.length}, UserId: ${user?.id}`,
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -760,7 +1254,7 @@ export function ChatRoom({
           'Permission Required',
           'VComm needs camera and microphone permissions to make calls. Please grant permissions in your device settings.',
           [
-            {text: 'Cancel', style: 'cancel'},
+            { text: 'Cancel', style: 'cancel' },
             {
               text: 'Open Settings',
               onPress: () => openPermissionSettings(),
@@ -772,7 +1266,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           'Unable to start call. Please try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
       }
     }
@@ -790,7 +1284,7 @@ export function ChatRoom({
         Alert.alert(
           'Connection Not Ready',
           'Please wait a moment for the connection to establish, then try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -807,7 +1301,7 @@ export function ChatRoom({
         Alert.alert(
           'No Participants',
           'Cannot start a group call with no other participants.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
         return;
       }
@@ -851,7 +1345,7 @@ export function ChatRoom({
           'Permission Required',
           'VComm needs camera and microphone permissions to make calls. Please grant permissions in your device settings.',
           [
-            {text: 'Cancel', style: 'cancel'},
+            { text: 'Cancel', style: 'cancel' },
             {
               text: 'Open Settings',
               onPress: () => openPermissionSettings(),
@@ -863,7 +1357,7 @@ export function ChatRoom({
         Alert.alert(
           'Call Failed',
           'Unable to start group call. Please try again.',
-          [{text: 'OK', style: 'default'}]
+          [{ text: 'OK', style: 'default' }]
         );
       }
     }
@@ -918,6 +1412,89 @@ export function ChatRoom({
     );
   };
 
+  // Load available users that can be added to the group
+  const loadAvailableUsersToAdd = async () => {
+    try {
+      setIsLoadingUsersToAdd(true);
+      // Get all users
+      const allUsers = await apiRequest('/api/all-users');
+
+      // Filter out users already in the group
+      const existingMemberIds = conversationMembers.map((m: any) => m.userId);
+      const available = allUsers.filter((u: any) => !existingMemberIds.includes(u.id));
+
+      setAvailableUsersToAdd(available);
+      setSelectedUsersToAdd([]);
+      setAddMemberSearchQuery('');
+    } catch (error) {
+      console.error('[ChatRoom] Error loading users to add:', error);
+      Alert.alert('Error', 'Failed to load users.');
+    } finally {
+      setIsLoadingUsersToAdd(false);
+    }
+  };
+
+  // Handle opening add member modal
+  const handleOpenAddMemberModal = () => {
+    loadAvailableUsersToAdd();
+    setAddMemberModalVisible(true);
+  };
+
+  // Toggle user selection for adding
+  const toggleUserToAdd = (userId: number) => {
+    setSelectedUsersToAdd((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId]
+    );
+  };
+
+  // Handle adding selected members to the group
+  const handleAddMembers = async () => {
+    if (selectedUsersToAdd.length === 0) {
+      Alert.alert('No Selection', 'Please select at least one user to add.');
+      return;
+    }
+
+    setIsAddingMembers(true);
+    try {
+      await apiRequest(`/api/groups/${conversationId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userIds: selectedUsersToAdd }),
+      });
+
+      // Refresh member list
+      const members = await apiRequest(`/api/conversations/${conversationId}/members`);
+      if (Array.isArray(members)) {
+        setConversationMembers(members);
+      }
+
+      setAddMemberModalVisible(false);
+      setSelectedUsersToAdd([]);
+      Alert.alert('Success', `${selectedUsersToAdd.length} member(s) added successfully.`);
+    } catch (error: any) {
+      console.error('[ChatRoom] Error adding members:', error);
+      Alert.alert('Error', error.message || 'Failed to add members.');
+    } finally {
+      setIsAddingMembers(false);
+    }
+  };
+
+  // Get filtered users based on search query
+  const getFilteredUsersToAdd = () => {
+    if (!addMemberSearchQuery.trim()) {
+      return availableUsersToAdd;
+    }
+    const query = addMemberSearchQuery.toLowerCase();
+    return availableUsersToAdd.filter(
+      (u) =>
+        u.callsign?.toLowerCase().includes(query) ||
+        u.fullName?.toLowerCase().includes(query) ||
+        u.rank?.toLowerCase().includes(query)
+    );
+  };
+
   const performDelete = async (deleteForEveryone: boolean) => {
     if (!messageToDelete) return;
 
@@ -945,13 +1522,13 @@ export function ChatRoom({
     try {
       const date = new Date(timestamp);
       if (isNaN(date.getTime())) return '';
-      return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
       return '';
     }
   };
 
-  const renderMessage = ({item}: {item: Message}): JSX.Element => {
+  const renderMessage = ({ item }: { item: Message }): JSX.Element => {
     if (!item) return <View />;
 
     // Ensure both are numbers for comparison
@@ -964,29 +1541,41 @@ export function ChatRoom({
       ? messages.find(m => m.id === item.replyToId)
       : null;
 
-    // Get full attachment URL
+    // Get full attachment URL - use ref as fallback to prevent stale closure issues
     const getFullAttachmentUrl = (url: string | undefined) => {
       if (!url) {
-        console.log('[ChatRoom] getFullAttachmentUrl - missing url');
         return '';
       }
-      if (!baseUrl) {
-        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet, returning relative url:', url);
-        // If baseUrl isn't loaded yet, return empty and wait for re-render
+      const currentBaseUrl = baseUrl || baseUrlRef.current;
+      if (!currentBaseUrl) {
+        console.log('[ChatRoom] getFullAttachmentUrl - baseUrl not loaded yet');
         return '';
       }
       if (url.startsWith('http://') || url.startsWith('https://')) {
-        console.log('[ChatRoom] getFullAttachmentUrl - already full URL:', url);
         return url;
       }
-      // Use the baseUrl from state
-      const fullUrl = `${baseUrl}${url.startsWith('/') ? url : '/' + url}`;
-      console.log('[ChatRoom] getFullAttachmentUrl - constructed:', {url, baseUrl, fullUrl});
+      const fullUrl = `${currentBaseUrl}${url.startsWith('/') ? url : '/' + url}`;
       return fullUrl;
+    };
+
+    // Build an Image source with auth headers for authenticated /uploads endpoint
+    const getAuthImageSource = (url: string | undefined) => {
+      const fullUrl = getFullAttachmentUrl(url);
+      if (!fullUrl) return { uri: '' };
+      const token = sessionToken || sessionTokenRef.current;
+      return {
+        uri: fullUrl,
+        headers: token ? { 'X-Session-Token': token } : undefined,
+      };
     };
 
     return (
       <View
+        ref={(ref) => {
+          if (ref) {
+            messageRefsMap.current.set(item.id, ref);
+          }
+        }}
         style={[
           styles.messageRow,
           isOwnMessage ? styles.ownMessageRow : styles.otherMessageRow,
@@ -995,10 +1584,14 @@ export function ChatRoom({
           style={[
             styles.messageBubble,
             isOwnMessage ? styles.ownMessage : styles.otherMessage,
+            highlightedMessageId === item.id && styles.highlightedMessage,
           ]}>
           <TouchableOpacity
             style={styles.menuButton}
-            onPress={() => setMessageMenuVisible(item.id)}
+            onPress={() => {
+              setSelectedMenuMessage(item);
+              setMessageMenuVisible(true);
+            }}
             activeOpacity={0.7}>
             <MaterialCommunityIcons name="dots-horizontal" size={16} color="#a6c455" />
           </TouchableOpacity>
@@ -1008,16 +1601,19 @@ export function ChatRoom({
           </Text>
 
           {repliedMessage && (
-            <View style={styles.repliedMessageContainer}>
+            <TouchableOpacity
+              style={styles.repliedMessageContainer}
+              onPress={() => handleViewRepliedMessage(repliedMessage)}
+              activeOpacity={0.7}>
               <View style={styles.repliedMessageContent}>
                 <Text style={styles.repliedMessageSender}>
                   {repliedMessage.senderName?.toUpperCase() || 'UNKNOWN'}
                 </Text>
-                <Text style={styles.repliedMessageText} numberOfLines={2}>
+                <Text style={styles.repliedMessageText} numberOfLines={1}>
                   {repliedMessage.content}
                 </Text>
               </View>
-            </View>
+            </TouchableOpacity>
           )}
 
           {item.hasAttachment && item.attachmentUrl && (
@@ -1027,33 +1623,24 @@ export function ChatRoom({
                   <TouchableOpacity
                     onPress={() => {
                       const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
-                      console.log('[ChatRoom] Image clicked, fullUrl:', fullUrl);
-                      console.log('[ChatRoom] baseUrl:', baseUrl);
-                      console.log('[ChatRoom] item.attachmentUrl:', item.attachmentUrl);
                       if (fullUrl) {
                         setSelectedImage({
                           url: fullUrl,
                           name: item.attachmentName || 'Image',
                         });
                         setImageViewerVisible(true);
-                      } else {
-                        console.warn('[ChatRoom] Full URL is empty, cannot open image viewer');
                       }
                     }}
                     activeOpacity={0.8}
                     style={styles.imageClickable}
                     disabled={false}>
                     <Image
-                      source={{uri: getFullAttachmentUrl(item.attachmentUrl)}}
+                      source={getAuthImageSource(item.attachmentUrl)}
                       style={styles.attachmentImage}
                       resizeMode="cover"
                       pointerEvents="none"
                       onError={(error) => {
                         console.log('[ChatRoom] Image load error:', error.nativeEvent);
-                        console.log('[ChatRoom] Failed URL:', getFullAttachmentUrl(item.attachmentUrl));
-                      }}
-                      onLoad={() => {
-                        console.log('[ChatRoom] Image loaded successfully:', getFullAttachmentUrl(item.attachmentUrl));
                       }}
                     />
                   </TouchableOpacity>
@@ -1076,43 +1663,73 @@ export function ChatRoom({
                     }
                   }}>
                   <View style={styles.videoThumbnail}>
-                    <MaterialCommunityIcons name="play-circle-outline" size={64} color="#a6c455" />
+                    {item.attachmentThumbnailUrl && baseUrl ? (
+                      <Image
+                        source={getAuthImageSource(item.attachmentThumbnailUrl)}
+                        style={styles.videoThumbnailImage}
+                        resizeMode="cover"
+                      />
+                    ) : null}
+                    <View style={styles.playOverlay}>
+                      <MaterialCommunityIcons name="play-circle-outline" size={48} color="#fff" />
+                    </View>
                   </View>
                   <Text style={styles.videoFileName} numberOfLines={1}>
                     {item.attachmentName || 'Video'}
                   </Text>
                 </TouchableOpacity>
-              ) : item.attachmentType === 'document' || item.attachmentName?.endsWith('.pdf') ? (
-                <TouchableOpacity
-                  style={styles.fileAttachment}
-                  onPress={async () => {
-                    const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
-                    if (fullUrl) {
-                      try {
-                        await downloadAndOpenPDF(fullUrl, item.attachmentName || 'document.pdf');
-                      } catch (error) {
-                        console.error('[ChatRoom] Failed to open PDF:', error);
-                        Alert.alert('Error', 'Failed to download or open PDF file');
+              ) : item.attachmentType === 'audio' ? (
+                <View style={styles.audioAttachment}>
+                  <TouchableOpacity
+                    style={styles.audioPlayButton}
+                    onPress={() => {
+                      const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                      if (fullUrl) {
+                        handlePlayAudio(item.id, fullUrl);
                       }
-                    }
-                  }}>
-                  <MaterialCommunityIcons name="file-pdf-box" size={32} color="#d97070" />
-                  <Text style={styles.fileName} numberOfLines={1}>
-                    {item.attachmentName || 'PDF Document'}
-                  </Text>
-                </TouchableOpacity>
+                    }}>
+                    <MaterialCommunityIcons
+                      name={playingAudioId === item.id ? 'stop-circle' : 'play-circle'}
+                      size={36}
+                      color="#a6c455"
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.audioInfo}>
+                    <View style={styles.audioWaveform}>
+                      <View style={[
+                        styles.audioProgressBar,
+                        { width: playingAudioId === item.id ? `${audioProgressPercent * 100}%` : '0%' },
+                      ]} />
+                    </View>
+                    <Text style={styles.audioTime}>
+                      {playingAudioId === item.id ? `${audioProgress} / ${audioDuration}` : (item.attachmentName || 'Voice note')}
+                    </Text>
+                  </View>
+                </View>
               ) : (
-                <TouchableOpacity
-                  style={styles.fileAttachment}
-                  onPress={() => {
-                    const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
-                    if (fullUrl) Linking.openURL(fullUrl);
-                  }}>
-                  <Text style={styles.fileIcon}>📎</Text>
-                  <Text style={styles.fileName} numberOfLines={1}>
-                    {item.attachmentName || 'File'}
-                  </Text>
-                </TouchableOpacity>
+                (() => {
+                  const docIcon = getDocumentIcon(item.attachmentName, item.attachmentType);
+                  return (
+                    <TouchableOpacity
+                      style={styles.fileAttachment}
+                      onPress={async () => {
+                        const fullUrl = getFullAttachmentUrl(item.attachmentUrl);
+                        if (fullUrl) {
+                          try {
+                            await downloadAndOpenDocument(fullUrl, item.attachmentName || 'document');
+                          } catch (error: any) {
+                            console.error('[ChatRoom] Failed to open document:', error);
+                            Alert.alert('Error', error.message || 'Failed to download or open document');
+                          }
+                        }
+                      }}>
+                      <MaterialCommunityIcons name={docIcon.icon} size={32} color={docIcon.color} />
+                      <Text style={styles.fileName} numberOfLines={1}>
+                        {item.attachmentName || 'Document'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })()
               )}
             </View>
           )}
@@ -1155,25 +1772,84 @@ export function ChatRoom({
     </View>
   );
 
-  const groupMessagesByDate = (messages: Message[]) => {
-    const grouped: {date: string; messages: Message[]}[] = [];
+  // Flatten messages with date separators as individual items for FlatList
+  // This prevents the inner .map() re-render problem that breaks Android touch handlers
+  type FlatItem = { type: 'date'; date: string; key: string } | { type: 'message'; message: Message; key: string };
+
+  const flatItems: FlatItem[] = useMemo(() => {
+    const items: FlatItem[] = [];
     let currentDate = '';
 
     messages.forEach((message) => {
       const messageDate = new Date(message.timestamp).toDateString();
-
       if (messageDate !== currentDate) {
-        grouped.push({date: messageDate, messages: [message]});
+        items.push({ type: 'date', date: messageDate, key: `date-${messageDate}` });
         currentDate = messageDate;
-      } else {
-        grouped[grouped.length - 1].messages.push(message);
       }
+      items.push({ type: 'message', message, key: `msg-${message.id}` });
     });
 
-    return grouped;
-  };
+    return items;
+  }, [messages]);
 
-  const groupedMessages = groupMessagesByDate(messages);
+  // Show replied message in a popup instead of scrolling (more reliable)
+  const handleViewRepliedMessage = useCallback((repliedMessage: Message) => {
+    console.log('[ChatRoom] Viewing replied message:', repliedMessage.id);
+    setViewingRepliedMessage(repliedMessage);
+  }, []);
+
+  // Jump to a specific message in the chat - uses measured positions for accuracy
+  const handleJumpToMessage = useCallback((messageId: number) => {
+    console.log('[ChatRoom] Jumping to message:', messageId);
+
+    // Set flag to prevent onContentSizeChange from interfering
+    // Keep it true for the entire highlight duration
+    isJumpingToMessage.current = true;
+
+    // Close the modal first
+    setViewingRepliedMessage(null);
+
+    // Small delay to let modal close first
+    setTimeout(() => {
+      // Get the View ref for this message
+      const messageRef = messageRefsMap.current.get(messageId);
+      const flatList = flatListRef.current;
+
+      if (messageRef && flatList) {
+        // Measure the message position relative to the FlatList
+        messageRef.measureLayout(
+          flatList.getNativeScrollRef(),
+          (x, y, width, height) => {
+            console.log('[ChatRoom] Message measured position:', { x, y, width, height });
+
+            // Scroll to the message position, offset by ~150px to show it in upper-middle of screen
+            const scrollOffset = Math.max(0, y - 150);
+
+            console.log('[ChatRoom] Scrolling to offset:', scrollOffset);
+
+            flatList.scrollToOffset({
+              offset: scrollOffset,
+              animated: false,
+            });
+          },
+          (error) => {
+            console.log('[ChatRoom] measureLayout failed:', error);
+          }
+        );
+      } else {
+        console.log('[ChatRoom] Message ref or FlatList not found');
+      }
+
+      // Highlight the message so user can easily find it
+      setHighlightedMessageId(messageId);
+
+      // Clear highlight and jumping flag after 3 seconds
+      setTimeout(() => {
+        setHighlightedMessageId(null);
+        isJumpingToMessage.current = false;
+      }, 3000);
+    }, 200);
+  }, []);
 
   // Render loading indicator for pagination
   const renderLoadingIndicator = () => {
@@ -1213,20 +1889,17 @@ export function ChatRoom({
               {displayName.toUpperCase()}
             </Text>
             <View style={styles.headerStatus}>
-              <View style={styles.statusDot} />
-              <Text style={styles.headerSubtitle}>
-                {isGroup ? 'GROUP CHANNEL' : 'DIRECT CHAT'}
+              <View style={[styles.statusDot, isGroup ? styles.statusDotGroup : (otherUserOnline ? styles.statusDotOnline : styles.statusDotOffline)]} />
+              <Text style={[styles.headerSubtitle, !isGroup && (otherUserOnline ? styles.statusTextOnline : styles.statusTextOffline)]}>
+                {isGroup ? 'GROUP CHANNEL' : (otherUserOnline ? 'ONLINE' : 'OFFLINE')}
               </Text>
             </View>
           </View>
         </TouchableOpacity>
 
         <View style={styles.headerActions}>
-          {/* Show Rejoin button if there's an active group call for this conversation */}
-          {isGroup &&
-           callState.status === 'active' &&
-           callState.isGroupCall &&
-           callState.conversationId === conversationId ? (
+          {/* Show Rejoin button if server reports an active group call AND user is NOT already in it */}
+          {isGroup && activeGroupCall && callState.conversationId !== conversationId ? (
             <TouchableOpacity
               style={styles.rejoinButton}
               onPress={() => handleStartCall('video')}>
@@ -1235,13 +1908,23 @@ export function ChatRoom({
                 size={18}
                 color="#ffffff"
               />
-              <Text style={styles.rejoinButtonText}>Rejoin</Text>
+              <Text style={styles.rejoinButtonText}>
+                Rejoin ({activeGroupCall.participants.length})
+              </Text>
             </TouchableOpacity>
           ) : (
             <>
               <TouchableOpacity
                 style={styles.callButton}
-                onPress={() => handleStartCall('video')}>
+                onPress={async () => {
+                  await handleStartCall('video');
+                  // Video button: enable camera after call setup completes
+                  const store = useCallStore.getState();
+                  if (store.localStream) {
+                    store.localStream.getVideoTracks().forEach((t: any) => { t.enabled = true; });
+                    useCallStore.setState({ isVideoEnabled: true });
+                  }
+                }}>
                 <MaterialCommunityIcons
                   name="video"
                   size={18}
@@ -1259,8 +1942,27 @@ export function ChatRoom({
               </TouchableOpacity>
             </>
           )}
+          <TouchableOpacity
+            style={styles.callButton}
+            onPress={handleToggleMute}>
+            <MaterialCommunityIcons
+              name={isMuted ? 'bell-off' : 'bell'}
+              size={18}
+              color={isMuted ? '#888' : '#a6c455'}
+            />
+          </TouchableOpacity>
         </View>
       </View>
+
+      {/* Call in Progress Banner */}
+      {isGroup && activeGroupCall && callState.conversationId !== conversationId && (
+        <View style={styles.callInProgressBanner}>
+          <MaterialCommunityIcons name="phone-in-talk" size={16} color="#a6c455" />
+          <Text style={styles.callInProgressText}>
+            CALL IN PROGRESS ({activeGroupCall.participants.length} ACTIVE)
+          </Text>
+        </View>
+      )}
 
       {/* Messages */}
       {isLoading ? (
@@ -1271,31 +1973,41 @@ export function ChatRoom({
       ) : (
         <FlatList
           ref={flatListRef}
-          data={groupedMessages}
-          extraData={`${messages.length}-${baseUrl}`}
-          renderItem={({item: group}) => (
-            <View>
-              {renderDateSeparator(group.date)}
-              {group.messages.map((message: Message, index: number) => (
-                <React.Fragment key={`${message.id}-${index}`}>
-                  {renderMessage({item: message})}
-                </React.Fragment>
-              ))}
-            </View>
-          )}
-          keyExtractor={(item) => item.date}
+          data={flatItems}
+          extraData={`${messages.length}-${baseUrl}-${sessionToken}-${highlightedMessageId}-${playingAudioId}`}
+          removeClippedSubviews={false}
+          keyboardShouldPersistTaps="handled"
+          windowSize={10}
+          maxToRenderPerBatch={10}
+          initialNumToRender={10}
+          renderItem={({ item }) => {
+            if (item.type === 'date') {
+              return renderDateSeparator(item.date);
+            }
+            return renderMessage({ item: item.message });
+          }}
+          keyExtractor={(item) => item.key}
           contentContainerStyle={styles.messagesContent}
           ListHeaderComponent={renderLoadingIndicator}
-          onContentSizeChange={() => {
-            // Only auto-scroll to end if we've already done initial positioning
-            // This prevents scrolling during initial load
-            if (hasScrolledToInitialPosition.current) {
-              flatListRef.current?.scrollToEnd({animated: true});
-            }
-          }}
+          ListFooterComponent={sendingAttachmentType ? (
+            <View style={styles.sendingAttachmentIndicator}>
+              <View style={styles.sendingAttachmentBubble}>
+                <ActivityIndicator size="small" color="#a6c455" />
+                <Text style={styles.sendingAttachmentText}>
+                  {uploadProgress !== null
+                    ? `UPLOADING ${sendingAttachmentType.toUpperCase()}... ${uploadProgress}%`
+                    : `PROCESSING ${sendingAttachmentType.toUpperCase()}...`}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           onScroll={(event) => {
             const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-            // Check if user scrolled to top (within 100px threshold)
+            // Track whether user is near the bottom (within 150px)
+            const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+            isNearBottom.current = distanceFromBottom < 150;
+
+            // Check if user scrolled to top (within 100px threshold) for pagination
             if (contentOffset.y < 100) {
               const paginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
               if (paginationInfo?.hasMore && !paginationInfo?.isLoading) {
@@ -1305,6 +2017,14 @@ export function ChatRoom({
             }
           }}
           scrollEventThrottle={400}
+          onScrollToIndexFailed={(info) => {
+            // Scroll to approximate position - don't retry scrollToIndex to avoid issues
+            console.log('[ChatRoom] scrollToIndexFailed, using offset fallback');
+            flatListRef.current?.scrollToOffset({
+              offset: info.averageItemLength * info.index,
+              animated: false,
+            });
+          }}
         />
       )}
 
@@ -1353,7 +2073,7 @@ export function ChatRoom({
             <View style={styles.attachmentPreviewContent}>
               {selectedAttachment.type?.startsWith('image/') ? (
                 <Image
-                  source={{uri: selectedAttachment.uri}}
+                  source={{ uri: selectedAttachment.uri }}
                   style={styles.previewImage}
                 />
               ) : selectedAttachment.type?.startsWith('video/') ? (
@@ -1363,20 +2083,18 @@ export function ChatRoom({
                     {selectedAttachment.fileName}
                   </Text>
                 </View>
-              ) : selectedAttachment.type === 'application/pdf' ? (
-                <View style={styles.previewFile}>
-                  <MaterialCommunityIcons name="file-pdf-box" size={24} color="#d97070" />
-                  <Text style={styles.previewFileName} numberOfLines={1}>
-                    {selectedAttachment.fileName}
-                  </Text>
-                </View>
               ) : (
-                <View style={styles.previewFile}>
-                  <Text style={styles.previewFileIcon}>📎</Text>
-                  <Text style={styles.previewFileName} numberOfLines={1}>
-                    {selectedAttachment.fileName}
-                  </Text>
-                </View>
+                (() => {
+                  const docIcon = getDocumentIcon(selectedAttachment.fileName, selectedAttachment.type);
+                  return (
+                    <View style={styles.previewFile}>
+                      <MaterialCommunityIcons name={docIcon.icon} size={24} color={docIcon.color} />
+                      <Text style={styles.previewFileName} numberOfLines={1}>
+                        {selectedAttachment.fileName}
+                      </Text>
+                    </View>
+                  );
+                })()
               )}
               <TouchableOpacity
                 style={styles.removeAttachment}
@@ -1406,7 +2124,17 @@ export function ChatRoom({
               <View style={styles.attachmentOptionIcon}>
                 <MaterialCommunityIcons name="camera" size={24} color="#d9a870" />
               </View>
-              <Text style={styles.attachmentOptionText}>Camera</Text>
+              <Text style={styles.attachmentOptionText}>Photo</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.attachmentOption}
+              onPress={handleVideoCameraPicker}
+              activeOpacity={0.7}>
+              <View style={styles.attachmentOptionIcon}>
+                <MaterialCommunityIcons name="video" size={24} color="#e57373" />
+              </View>
+              <Text style={styles.attachmentOptionText}>Video</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1416,7 +2144,7 @@ export function ChatRoom({
               <View style={styles.attachmentOptionIcon}>
                 <MaterialCommunityIcons name="image" size={24} color="#a6c455" />
               </View>
-              <Text style={styles.attachmentOptionText}>Photos & Videos</Text>
+              <Text style={styles.attachmentOptionText}>Gallery</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1431,68 +2159,117 @@ export function ChatRoom({
           </View>
         )}
 
+        {/* Upload progress bar (#14) */}
+        {uploadProgress !== null && (
+          <View style={styles.uploadProgressContainer}>
+            <View style={[styles.uploadProgressBar, { width: `${uploadProgress}%` }]} />
+            <Text style={styles.uploadProgressText}>{uploadProgress}%</Text>
+          </View>
+        )}
+
+        {/* Retry failed attachment */}
+        {failedAttachment && !selectedAttachment && (
+          <TouchableOpacity
+            style={styles.retryBanner}
+            onPress={() => {
+              setSelectedAttachment(failedAttachment);
+              setFailedAttachment(null);
+            }}>
+            <MaterialCommunityIcons name="refresh" size={16} color="#ff9800" />
+            <Text style={styles.retryText}>Upload failed. Tap to retry.</Text>
+          </TouchableOpacity>
+        )}
+
         <View style={styles.inputWrapper}>
-          <TouchableOpacity
-            style={styles.attachButton}
-            onPress={handleAttachment}
-            disabled={isSending}>
-            <MaterialCommunityIcons
-              name={attachmentMenuVisible ? "close" : "paperclip"}
-              size={22}
-              color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
+          {isRecordingVoice ? (
+            <VoiceNoteRecorder
+              onSend={handleSendVoiceNote}
+              onCancel={() => setIsRecordingVoice(false)}
             />
-          </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.attachButton}
+                onPress={handleAttachment}
+                disabled={isSending}>
+                <MaterialCommunityIcons
+                  name={attachmentMenuVisible ? "close" : "paperclip"}
+                  size={22}
+                  color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
+                />
+              </TouchableOpacity>
 
-          <TextInput
-            style={styles.input}
-            placeholder="ENTER MESSAGE..."
-            placeholderTextColor="#666"
-            value={messageText}
-            onChangeText={setMessageText}
-            multiline
-            maxLength={1000}
-          />
-
-          <TouchableOpacity
-            onPress={sendMessage}
-            disabled={(!messageText.trim() && !selectedAttachment) || isSending}
-            style={[
-              styles.sendButton,
-              ((!messageText.trim() && !selectedAttachment) || isSending) &&
-                styles.sendButtonDisabled,
-            ]}>
-            {isSending ? (
-              <ActivityIndicator size="small" color="#a6c455" />
-            ) : (
-              <MaterialCommunityIcons
-                name="send"
-                size={22}
-                color="#a6c455"
+              <TextInput
+                style={styles.input}
+                placeholder="ENTER MESSAGE..."
+                placeholderTextColor="#666"
+                value={messageText}
+                onChangeText={setMessageText}
+                multiline
+                maxLength={1000}
               />
-            )}
-          </TouchableOpacity>
+
+              {messageText.trim() || selectedAttachment ? (
+                <TouchableOpacity
+                  onPress={sendMessage}
+                  disabled={(!messageText.trim() && !selectedAttachment) || isSending}
+                  style={[
+                    styles.sendButton,
+                    ((!messageText.trim() && !selectedAttachment) || isSending) &&
+                    styles.sendButtonDisabled,
+                  ]}>
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#a6c455" />
+                  ) : (
+                    <MaterialCommunityIcons
+                      name="send"
+                      size={22}
+                      color="#a6c455"
+                    />
+                  )}
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => setIsRecordingVoice(true)}
+                  disabled={isSending}
+                  style={styles.sendButton}>
+                  <MaterialCommunityIcons
+                    name="microphone"
+                    size={22}
+                    color={isSending ? '#3a3a3a' : '#a6c455'}
+                  />
+                </TouchableOpacity>
+              )}
+            </>
+          )}
         </View>
       </View>
 
       {/* Message Menu Modal */}
       <Modal
-        visible={messageMenuVisible !== null}
+        visible={messageMenuVisible}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setMessageMenuVisible(null)}>
+        onRequestClose={() => {
+          setMessageMenuVisible(false);
+          setSelectedMenuMessage(null);
+        }}>
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setMessageMenuVisible(null)}>
+          onPress={() => {
+            setMessageMenuVisible(false);
+            setSelectedMenuMessage(null);
+          }}>
           <View style={styles.messageMenu}>
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
-                const message = messages.find(m => m.id === messageMenuVisible);
-                if (message) {
-                  setReplyToMessage(message);
-                  setMessageMenuVisible(null);
+                if (selectedMenuMessage) {
+                  setReplyToMessage(selectedMenuMessage);
                 }
+                setMessageMenuVisible(false);
+                setSelectedMenuMessage(null);
               }}>
               <MaterialCommunityIcons name="reply" size={20} color="#a6c455" />
               <Text style={styles.menuItemText}>REPLY</Text>
@@ -1501,8 +2278,10 @@ export function ChatRoom({
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
-                const message = messages.find(m => m.id === messageMenuVisible);
-                if (message) handleForwardMessage(message);
+                if (selectedMenuMessage) {
+                  handleForwardMessage(selectedMenuMessage);
+                }
+                setSelectedMenuMessage(null);
               }}>
               <MaterialCommunityIcons name="share" size={20} color="#a6c455" />
               <Text style={styles.menuItemText}>FORWARD</Text>
@@ -1511,11 +2290,13 @@ export function ChatRoom({
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
-                const message = messages.find(m => m.id === messageMenuVisible);
-                if (message) handleDeleteMessage(message);
+                if (selectedMenuMessage) {
+                  handleDeleteMessage(selectedMenuMessage);
+                }
+                setSelectedMenuMessage(null);
               }}>
               <MaterialCommunityIcons name="delete" size={20} color="#ff4444" />
-              <Text style={[styles.menuItemText, {color: '#ff4444'}]}>DELETE</Text>
+              <Text style={[styles.menuItemText, { color: '#ff4444' }]}>DELETE</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1556,16 +2337,16 @@ export function ChatRoom({
             <FlatList
               data={forwardConversations}
               keyExtractor={(item) => String(item.id)}
-              renderItem={({item}) => (
+              renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.conversationItem}
                   onPress={() => handleForwardToConversation(item.id)}>
                   <View style={[styles.conversationAvatar, item.isGroup ? styles.groupAvatar : styles.directAvatar]}>
                     <Text style={styles.conversationAvatarText}>
-                      {item.name?.substring(0, 2).toUpperCase() || '??'}
+                      {(item.displayName || item.name)?.substring(0, 2).toUpperCase() || '??'}
                     </Text>
                   </View>
-                  <Text style={styles.conversationName}>{item.name || 'Unnamed'}</Text>
+                  <Text style={styles.conversationName}>{item.displayName || item.name || 'Unnamed'}</Text>
                 </TouchableOpacity>
               )}
               style={styles.conversationsList}
@@ -1636,7 +2417,7 @@ export function ChatRoom({
                   onPress={() => performDelete(true)}>
                   <MaterialCommunityIcons name="delete" size={20} color="#ff4444" />
                   <View style={styles.deleteOptionText}>
-                    <Text style={[styles.deleteOptionTitle, {color: '#ff4444'}]}>
+                    <Text style={[styles.deleteOptionTitle, { color: '#ff4444' }]}>
                       DELETE FOR EVERYONE
                     </Text>
                     <Text style={styles.deleteOptionDesc}>
@@ -1654,6 +2435,54 @@ export function ChatRoom({
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* View Replied Message Modal */}
+      <Modal
+        visible={viewingRepliedMessage !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setViewingRepliedMessage(null)}>
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setViewingRepliedMessage(null)}>
+          <Pressable
+            style={styles.repliedMessageModal}
+            onPress={(e) => e.stopPropagation()}>
+            <View style={styles.repliedMessageModalHeader}>
+              <Text style={styles.repliedMessageModalTitle}>ORIGINAL MESSAGE</Text>
+              <TouchableOpacity onPress={() => setViewingRepliedMessage(null)}>
+                <MaterialCommunityIcons name="close" size={24} color="#a6c455" />
+              </TouchableOpacity>
+            </View>
+
+            {viewingRepliedMessage && (
+              <>
+                <View style={styles.repliedMessageModalContent}>
+                  <Text style={styles.repliedMessageModalSender}>
+                    {viewingRepliedMessage.senderName?.toUpperCase() || 'UNKNOWN'}
+                  </Text>
+                  <Text style={styles.repliedMessageModalText}>
+                    {viewingRepliedMessage.content}
+                  </Text>
+                  {viewingRepliedMessage.timestamp && (
+                    <Text style={styles.repliedMessageModalTime}>
+                      {new Date(viewingRepliedMessage.timestamp).toLocaleString()}
+                    </Text>
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.jumpToMessageButton}
+                  onPress={() => handleJumpToMessage(viewingRepliedMessage.id)}
+                  activeOpacity={0.7}>
+                  <MaterialCommunityIcons name="arrow-down-circle" size={20} color="#a6c455" />
+                  <Text style={styles.jumpToMessageText}>JUMP TO MESSAGE</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {/* Video Player Modal */}
@@ -1736,6 +2565,14 @@ export function ChatRoom({
                       </Text>
 
                       <View style={styles.infoItem}>
+                        <MaterialCommunityIcons name="badge-account" size={20} color="#a6c455" />
+                        <Text style={styles.infoLabel}>NRP</Text>
+                      </View>
+                      <Text style={styles.infoValue}>
+                        {selectedMemberProfile.nrp || 'Not set'}
+                      </Text>
+
+                      <View style={styles.infoItem}>
                         <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
                         <Text style={styles.infoLabel}>RANK</Text>
                       </View>
@@ -1756,17 +2593,29 @@ export function ChatRoom({
               ) : (
                 /* Group Members List */
                 <View style={styles.infoContent}>
-                  <View style={styles.infoItem}>
-                    <MaterialCommunityIcons name="account-group" size={20} color="#a6c455" />
-                    <Text style={styles.infoLabel}>
-                      {conversationMembers.length} MEMBERS
-                    </Text>
+                  <View style={styles.memberHeaderRow}>
+                    <View style={styles.infoItem}>
+                      <MaterialCommunityIcons name="account-group" size={20} color="#a6c455" />
+                      <Text style={styles.infoLabel}>
+                        {conversationMembers.length} MEMBERS
+                      </Text>
+                    </View>
+                    {/* Add Member Button - Only for Admins */}
+                    {conversationMembers.find(m => m.userId === user?.id)?.role === 'admin' && (
+                      <TouchableOpacity
+                        style={styles.addMemberButton}
+                        onPress={handleOpenAddMemberModal}
+                        activeOpacity={0.7}>
+                        <MaterialCommunityIcons name="account-plus" size={18} color="#a6c455" />
+                        <Text style={styles.addMemberButtonText}>ADD</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
 
                   <FlatList
                     data={conversationMembers}
                     keyExtractor={(item) => String(item.userId)}
-                    renderItem={({item}) => {
+                    renderItem={({ item }) => {
                       const currentMember = conversationMembers.find(m => m.userId === user?.id);
                       const isCurrentUserAdmin = currentMember?.role === 'admin';
                       const isMemberAdmin = item.role === 'admin';
@@ -1848,6 +2697,14 @@ export function ChatRoom({
                         </Text>
 
                         <View style={styles.infoItem}>
+                          <MaterialCommunityIcons name="badge-account" size={20} color="#a6c455" />
+                          <Text style={styles.infoLabel}>NRP</Text>
+                        </View>
+                        <Text style={styles.infoValue}>
+                          {otherUser.nrp || 'Not set'}
+                        </Text>
+
+                        <View style={styles.infoItem}>
                           <MaterialCommunityIcons name="shield-star" size={20} color="#a6c455" />
                           <Text style={styles.infoLabel}>RANK</Text>
                         </View>
@@ -1877,6 +2734,134 @@ export function ChatRoom({
               }}>
               <Text style={styles.cancelButtonText}>CLOSE</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Add Member Modal */}
+      <Modal
+        visible={addMemberModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          setAddMemberModalVisible(false);
+          setSelectedUsersToAdd([]);
+        }}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.addMemberDialog}>
+            {/* Header */}
+            <View style={styles.addMemberHeader}>
+              <Text style={styles.addMemberTitle}>ADD MEMBERS</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setAddMemberModalVisible(false);
+                  setSelectedUsersToAdd([]);
+                }}>
+                <MaterialCommunityIcons name="close" size={24} color="#a6c455" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Search Input */}
+            <View style={styles.addMemberSearchContainer}>
+              <TextInput
+                style={styles.addMemberSearchInput}
+                placeholder="SEARCH PERSONNEL..."
+                placeholderTextColor="#666"
+                value={addMemberSearchQuery}
+                onChangeText={setAddMemberSearchQuery}
+              />
+            </View>
+
+            {/* Selection Info */}
+            {selectedUsersToAdd.length > 0 && (
+              <View style={styles.addMemberSelectionInfo}>
+                <Text style={styles.addMemberSelectionText}>
+                  {selectedUsersToAdd.length} PERSONNEL SELECTED
+                </Text>
+              </View>
+            )}
+
+            {/* Users List */}
+            {isLoadingUsersToAdd ? (
+              <View style={styles.addMemberLoadingContainer}>
+                <ActivityIndicator size="large" color="#a6c455" />
+                <Text style={styles.addMemberLoadingText}>LOADING PERSONNEL...</Text>
+              </View>
+            ) : getFilteredUsersToAdd().length === 0 ? (
+              <View style={styles.addMemberEmptyContainer}>
+                <MaterialCommunityIcons name="account-search" size={48} color="#666" />
+                <Text style={styles.addMemberEmptyText}>
+                  {addMemberSearchQuery ? 'NO MATCHING PERSONNEL' : 'NO AVAILABLE PERSONNEL TO ADD'}
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={getFilteredUsersToAdd()}
+                keyExtractor={(item) => String(item.id)}
+                renderItem={({ item }) => {
+                  const isSelected = selectedUsersToAdd.includes(item.id);
+                  return (
+                    <TouchableOpacity
+                      style={styles.addMemberUserItem}
+                      onPress={() => toggleUserToAdd(item.id)}
+                      activeOpacity={0.7}>
+                      <View style={[styles.addMemberAvatar, isSelected && styles.addMemberAvatarSelected]}>
+                        <Text style={styles.addMemberAvatarText}>
+                          {(item.callsign || item.fullName || 'U').substring(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={styles.addMemberUserInfo}>
+                        <Text style={styles.addMemberUserName}>
+                          {item.callsign || item.fullName || 'Unknown User'}
+                        </Text>
+                        <Text style={styles.addMemberUserDetails}>
+                          {item.rank || 'No Rank'} • {item.branch || 'No Branch'}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <View style={styles.addMemberCheckmark}>
+                          <MaterialCommunityIcons name="check" size={18} color="#a6c455" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+                style={styles.addMemberUsersList}
+              />
+            )}
+
+            {/* Action Buttons */}
+            <View style={styles.addMemberButtonRow}>
+              <TouchableOpacity
+                style={[
+                  styles.addMemberConfirmButton,
+                  (selectedUsersToAdd.length === 0 || isAddingMembers) && styles.addMemberConfirmButtonDisabled,
+                ]}
+                onPress={handleAddMembers}
+                disabled={selectedUsersToAdd.length === 0 || isAddingMembers}
+                activeOpacity={0.7}>
+                {isAddingMembers ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="account-multiple-plus" size={18} color="#ffffff" />
+                    <Text style={styles.addMemberConfirmText}>
+                      ADD {selectedUsersToAdd.length > 0 ? `(${selectedUsersToAdd.length})` : ''}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.addMemberCancelButton}
+                onPress={() => {
+                  setAddMemberModalVisible(false);
+                  setSelectedUsersToAdd([]);
+                }}
+                activeOpacity={0.7}>
+                <Text style={styles.addMemberCancelText}>CANCEL</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1982,14 +2967,28 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#a6c455',
     marginRight: 6,
+  },
+  statusDotGroup: {
+    backgroundColor: '#a6c455',
+  },
+  statusDotOnline: {
+    backgroundColor: '#4ade80',
+  },
+  statusDotOffline: {
+    backgroundColor: '#666',
   },
   headerSubtitle: {
     color: '#666',
     fontSize: 10,
     letterSpacing: 0.5,
     fontWeight: '600',
+  },
+  statusTextOnline: {
+    color: '#4ade80',
+  },
+  statusTextOffline: {
+    color: '#666',
   },
   headerActions: {
     flexDirection: 'row',
@@ -2020,6 +3019,23 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  callInProgressBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a3a1a',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#4d5d30',
+  },
+  callInProgressText: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
   },
   messagesContent: {
     padding: 16,
@@ -2085,12 +3101,18 @@ const styles = StyleSheet.create({
     borderColor: '#3a3a3a',
     borderTopLeftRadius: 0,
   },
+  highlightedMessage: {
+    borderColor: '#a6c455',
+    borderWidth: 2,
+    backgroundColor: '#3d4d25',
+  },
   senderName: {
     color: '#a6c455',
     fontSize: 10,
     fontWeight: 'bold',
     letterSpacing: 0.5,
     marginBottom: 4,
+    paddingRight: 24,
   },
   messageText: {
     color: '#ffffff',
@@ -2294,6 +3316,29 @@ const styles = StyleSheet.create({
   attachmentContainer: {
     marginBottom: 8,
   },
+  sendingAttachmentIndicator: {
+    alignItems: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  sendingAttachmentBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2a3a1a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    borderStyle: 'dashed',
+  },
+  sendingAttachmentText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1,
+  },
   imageClickable: {
     borderRadius: 4,
   },
@@ -2320,6 +3365,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1a1a',
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
+  },
+  videoThumbnailImage: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+  },
+  playOverlay: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    borderRadius: 30,
+    width: 60,
+    height: 60,
   },
   videoFileName: {
     color: '#a6c455',
@@ -2336,6 +3395,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#4d5d30',
     padding: 12,
+    gap: 8,
+    width: '100%',
   },
   fileIcon: {
     fontSize: 24,
@@ -2346,6 +3407,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     flex: 1,
+    flexShrink: 1,
+  },
+  audioAttachment: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    padding: 8,
+    minWidth: 200,
+  },
+  audioPlayButton: {
+    marginRight: 8,
+  },
+  audioInfo: {
+    flex: 1,
+  },
+  audioWaveform: {
+    height: 4,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  audioProgressBar: {
+    height: '100%',
+    backgroundColor: '#a6c455',
+    borderRadius: 2,
+  },
+  audioTime: {
+    color: '#888',
+    fontSize: 10,
+    letterSpacing: 0.3,
   },
   attachmentMenuOverlay: {
     position: 'absolute',
@@ -2430,6 +3525,73 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  repliedMessageModal: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    padding: 16,
+    width: '85%',
+    maxHeight: '60%',
+  },
+  repliedMessageModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#4d5d30',
+    paddingBottom: 12,
+  },
+  repliedMessageModalTitle: {
+    color: '#a6c455',
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  repliedMessageModalContent: {
+    backgroundColor: '#2a2a2a',
+    borderRadius: 4,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#a6c455',
+  },
+  repliedMessageModalSender: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  repliedMessageModalText: {
+    color: '#ffffff',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  repliedMessageModalTime: {
+    color: '#666',
+    fontSize: 10,
+    marginTop: 12,
+    letterSpacing: 0.5,
+  },
+  jumpToMessageButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    padding: 12,
+    marginTop: 16,
+    gap: 8,
+  },
+  jumpToMessageText: {
+    color: '#a6c455',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
   messageMenu: {
     backgroundColor: '#1a1a1a',
     borderRadius: 8,
@@ -2437,6 +3599,8 @@ const styles = StyleSheet.create({
     borderColor: '#4d5d30',
     padding: 8,
     minWidth: 200,
+    maxHeight: SCREEN_HEIGHT * 0.5,
+    maxWidth: SCREEN_WIDTH * 0.8,
   },
   menuItem: {
     flexDirection: 'row',
@@ -2726,6 +3890,214 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  memberHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  addMemberButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#4d5d30',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#5a6b38',
+  },
+  addMemberButtonText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  addMemberDialog: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    width: '90%',
+    maxHeight: '80%',
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+  },
+  addMemberHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 2,
+    borderBottomColor: '#4d5d30',
+  },
+  addMemberTitle: {
+    color: '#a6c455',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1.5,
+  },
+  addMemberSearchContainer: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  addMemberSearchInput: {
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#4d5d30',
+    borderRadius: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#ffffff',
+    fontSize: 13,
+    letterSpacing: 0.5,
+  },
+  addMemberSelectionInfo: {
+    backgroundColor: '#4d5d30',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#5a6b38',
+  },
+  addMemberSelectionText: {
+    color: '#a6c455',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+  addMemberLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+    minHeight: 200,
+  },
+  addMemberLoadingText: {
+    color: '#666',
+    fontSize: 11,
+    marginTop: 16,
+    letterSpacing: 1,
+    fontWeight: '600',
+  },
+  addMemberEmptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+    minHeight: 200,
+  },
+  addMemberEmptyText: {
+    color: '#666',
+    fontSize: 11,
+    marginTop: 16,
+    letterSpacing: 1,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  addMemberUsersList: {
+    maxHeight: 300,
+  },
+  addMemberUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  addMemberAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 4,
+    backgroundColor: '#3a3a3a',
+    borderWidth: 2,
+    borderColor: '#4d5d30',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  addMemberAvatarSelected: {
+    backgroundColor: '#4d5d30',
+    borderColor: '#5a6b38',
+  },
+  addMemberAvatarText: {
+    color: '#a6c455',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  addMemberUserInfo: {
+    flex: 1,
+  },
+  addMemberUserName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  addMemberUserDetails: {
+    color: '#666',
+    fontSize: 11,
+    letterSpacing: 0.3,
+  },
+  addMemberCheckmark: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#4d5d30',
+    borderWidth: 2,
+    borderColor: '#5a6b38',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  addMemberButtonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a2a',
+  },
+  addMemberConfirmButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4d5d30',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#5a6b38',
+    gap: 8,
+  },
+  addMemberConfirmButtonDisabled: {
+    backgroundColor: '#333',
+    borderColor: '#444',
+  },
+  addMemberConfirmText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  addMemberCancelButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1a1a1a',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#2a2a2a',
+  },
+  addMemberCancelText: {
+    color: '#999',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
   profileContainer: {
     alignItems: 'center',
   },
@@ -2758,5 +4130,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     letterSpacing: 0.5,
+  },
+  uploadProgressContainer: {
+    height: 20,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 4,
+    marginHorizontal: 12,
+    marginBottom: 4,
+    overflow: 'hidden',
+    justifyContent: 'center',
+  },
+  uploadProgressBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: '#4d5d30',
+    borderRadius: 4,
+  },
+  uploadProgressText: {
+    color: '#a6c455',
+    fontSize: 10,
+    textAlign: 'center',
+    fontWeight: 'bold',
+  },
+  retryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a1a00',
+    paddingVertical: 6,
+    gap: 6,
+  },
+  retryText: {
+    color: '#ff9800',
+    fontSize: 12,
   },
 });

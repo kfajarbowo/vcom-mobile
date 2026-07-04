@@ -126,4 +126,11 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // OkHttp for Background WebSocket client
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // AppCompat for IncomingCallActivity
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core-ktx:1.12.0'
 }
