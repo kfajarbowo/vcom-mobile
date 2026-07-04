@@ -1,3 +1,4 @@
+import { Alert } from 'react-native';
 import { getApiBaseUrl, getSessionToken } from './apiClient';
 import { useChatStore } from '../store/chatStore';
 
@@ -41,6 +42,7 @@ export type WebSocketMessage = {
   | 'pong'
   | 'group_call_user_left'
   | 'message_deleted'
+  | 'session_terminated'
   | 'webrtc_ready';
   payload: any;
 };
@@ -58,6 +60,7 @@ class WebSocketService {
   private messageHandlers: Set<MessageHandler> = new Set();
   private isConnecting = false;
   private isAuthenticated = false;
+  private sessionTerminated = false;
 
   async connect(userId?: number): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
@@ -65,6 +68,8 @@ class WebSocketService {
       return;
     }
 
+    // Fresh connection attempt clears any previous forced-termination state
+    this.sessionTerminated = false;
     this.isConnecting = true;
 
     try {
@@ -164,6 +169,13 @@ class WebSocketService {
   }
 
   private scheduleReconnect(): void {
+    // Don't reconnect if the server terminated this session because the
+    // same user logged in from another device - the user has been logged out.
+    if (this.sessionTerminated) {
+      console.log('[WebSocket] Session terminated by server, skipping reconnect');
+      return;
+    }
+
     if (
       this.reconnectAttempts >= this.maxReconnectAttempts ||
       this.reconnectTimeout
@@ -241,6 +253,14 @@ class WebSocketService {
   }
 
   private async handleMessage(message: WebSocketMessage): Promise<void> {
+    // Forced logout: the same user logged in from another device.
+    // The server has invalidated this session, so log the previous device out.
+    if (message.type === 'session_terminated') {
+      console.log('[WebSocket] ⚠️ Session terminated by server:', message.payload?.reason);
+      await this.handleSessionTerminated(message.payload);
+      return;
+    }
+
     this.messageHandlers.forEach((handler) => {
       try {
         handler(message);
@@ -387,6 +407,28 @@ class WebSocketService {
         break;
       }
     }
+  }
+
+  private async handleSessionTerminated(payload: any): Promise<void> {
+    // Mark as terminated so the close handler doesn't try to reconnect/re-auth.
+    this.sessionTerminated = true;
+
+    const message =
+      payload?.message ||
+      'Sesi Anda telah dihentikan karena Anda login dari perangkat lain.';
+
+    // Log the user out (this also disconnects the WebSocket and clears the token).
+    try {
+      const { useAuthStore } = await import('../store/authStore');
+      await useAuthStore.getState().logout();
+    } catch (error) {
+      console.error('[WebSocket] Error during forced logout:', error);
+      // Ensure the socket is torn down even if logout failed.
+      this.disconnect();
+    }
+
+    // Inform the user why they were logged out.
+    Alert.alert('Sesi Berakhir', message, [{ text: 'OK' }]);
   }
 
   addMessageHandler(handler: MessageHandler): () => void {
