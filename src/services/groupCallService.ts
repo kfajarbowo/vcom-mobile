@@ -14,6 +14,7 @@ import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
 import {
   getIceServers,
   getMediaConstraints,
+  getAudioOnlyConstraints,
   getInCallManagerOptions,
   AUDIO_HEALTH_CHECK_INTERVAL,
   STREAM_WAIT_CONFIG
@@ -27,6 +28,8 @@ export class GroupCallService {
   private groupPeerConnections: Map<number, any> = new Map();
   private groupPendingIceCandidates: Map<number, RTCIceCandidate[]> = new Map();
   private audioHealthCheckInterval: NodeJS.Timeout | null = null;
+  private groupIceRestartAttempts: Map<number, number> = new Map();
+  private static readonly MAX_GROUP_ICE_RESTARTS = 2;
 
   // Store for participant streams (to handle tracks coming separately)
   private participantStreams: Map<number, MediaStream> = new Map();
@@ -153,11 +156,20 @@ export class GroupCallService {
 
       if (peerConnection.iceConnectionState === 'failed') {
         console.error(`[WebRTC Group] ❌ [${timestamp}] ICE connection FAILED with participant:`, participantUserId);
-        console.error('[WebRTC Group] This usually means STUN/TURN servers are not reachable or NAT traversal failed');
+        this.attemptGroupIceRecovery(participantUserId);
       } else if (peerConnection.iceConnectionState === 'disconnected') {
         console.warn(`[WebRTC Group] ⚠️ [${timestamp}] ICE connection DISCONNECTED with participant:`, participantUserId);
-        console.warn('[WebRTC Group] Connection may recover or fail completely');
-      } else if (peerConnection.iceConnectionState === 'checking') {
+        // Give it a grace window; if still down, attempt recovery.
+        setTimeout(() => {
+          const pc = this.groupPeerConnections.get(participantUserId);
+          if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+            this.attemptGroupIceRecovery(participantUserId);
+          }
+        }, 6000);
+      } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+        this.groupIceRestartAttempts.delete(participantUserId);
+      }
+      if (peerConnection.iceConnectionState === 'checking') {
         console.log(`[WebRTC Group] 🔍 [${timestamp}] ICE checking connectivity with participant:`, participantUserId);
       } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
         console.log(`[WebRTC Group] ✅ [${timestamp}] ICE connection established with participant:`, participantUserId);
@@ -182,13 +194,19 @@ export class GroupCallService {
     const hasPermissions = await requestCameraAndMicrophonePermissions();
 
     if (!hasPermissions) {
-      throw new Error('Camera/Microphone permissions not granted');
+      throw new Error('Microphone permission not granted');
     }
 
-    const constraints = getMediaConstraints();
-
     try {
-      const stream = await mediaDevices.getUserMedia(constraints);
+      // Try audio+video, fall back to audio-only if the camera is unavailable (denied / busy) so a
+      // group voice call still succeeds instead of tearing down.
+      let stream: MediaStream;
+      try {
+        stream = await mediaDevices.getUserMedia(getMediaConstraints(true));
+      } catch (videoError) {
+        console.warn('[WebRTC Group] getUserMedia with video failed, falling back to audio-only:', videoError);
+        stream = await mediaDevices.getUserMedia(getAudioOnlyConstraints());
+      }
       console.log('[WebRTC Group] Got user media stream');
       console.log('[WebRTC Group] Stream ID:', stream.id);
       console.log('[WebRTC Group] Audio tracks:', stream.getAudioTracks().length);
@@ -253,11 +271,13 @@ export class GroupCallService {
         currentUserId: currentUser?.id
       });
 
-      // Start audio session — earpiece by default (camera starts off)
+      // Start audio session. Video calls use the loudspeaker; audio calls the earpiece.
       const options = getInCallManagerOptions(callState.callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(false);
-      console.log('[WebRTC Group] Audio session started, speaker: false');
+      const useSpeaker = callState.callType === 'video';
+      InCallManager.setForceSpeakerphoneOn(useSpeaker);
+      useCallStore.setState({ isSpeakerEnabled: useSpeaker });
+      console.log('[WebRTC Group] Audio session started, speaker:', useSpeaker);
 
       // Start periodic audio health check
       this.startAudioHealthCheck();
@@ -530,10 +550,20 @@ export class GroupCallService {
       (peerConnection as any).oniceconnectionstatechange = () => {
         console.log(`[WebRTC Group] ICE state for ${fromUserId}:`, peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+          this.groupIceRestartAttempts.delete(fromUserId);
           const currentStatus = useCallStore.getState().status;
           if (currentStatus === 'calling') {
             useCallStore.getState().setCallStatus('active');
           }
+        } else if (peerConnection.iceConnectionState === 'failed') {
+          this.attemptGroupIceRecovery(fromUserId);
+        } else if (peerConnection.iceConnectionState === 'disconnected') {
+          setTimeout(() => {
+            const pc = this.groupPeerConnections.get(fromUserId);
+            if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+              this.attemptGroupIceRecovery(fromUserId);
+            }
+          }, 6000);
         }
       };
 
@@ -769,6 +799,30 @@ export class GroupCallService {
     }
   }
 
+  // Attempt to recover a broken mesh leg. To avoid both peers re-offering simultaneously (glare),
+  // only the numerically-lower userId re-offers; the higher one waits for that offer. After the
+  // restart budget is exhausted, drop the participant tile so it doesn't sit frozen forever.
+  private async attemptGroupIceRecovery(participantUserId: number): Promise<void> {
+    const currentUserId = useAuthStore.getState().user?.id;
+    if (currentUserId == null) return;
+
+    const attempts = this.groupIceRestartAttempts.get(participantUserId) || 0;
+    if (attempts >= GroupCallService.MAX_GROUP_ICE_RESTARTS) {
+      console.warn('[WebRTC Group] ICE recovery budget exhausted for participant, removing:', participantUserId);
+      this.removeGroupParticipant(participantUserId);
+      return;
+    }
+    this.groupIceRestartAttempts.set(participantUserId, attempts + 1);
+
+    // Deterministic initiator so the two peers don't both re-offer at once.
+    if (currentUserId < participantUserId) {
+      console.log('[WebRTC Group] 🔄 Re-offering to recover ICE with participant:', participantUserId);
+      await this.createGroupOffer(participantUserId);
+    } else {
+      console.log('[WebRTC Group] Waiting for peer to re-offer (they are the recovery initiator):', participantUserId);
+    }
+  }
+
   // Add new participant to ongoing group call
   async addGroupParticipant(participantUserId: number): Promise<void> {
     console.log('[WebRTC Group] Adding new participant:', participantUserId);
@@ -786,6 +840,7 @@ export class GroupCallService {
     }
 
     this.groupPendingIceCandidates.delete(participantUserId);
+    this.groupIceRestartAttempts.delete(participantUserId);
 
     // Clean up participant stream
     const stream = this.participantStreams.get(participantUserId);
@@ -812,12 +867,17 @@ export class GroupCallService {
     // Stop audio session
     InCallManager.stop();
 
-    // Stop local stream
+    this.groupIceRestartAttempts.clear();
+
+    // Stop AND release the local stream so the native camera capturer + its thread are disposed
+    // (stop() alone only marks tracks ended in react-native-webrtc).
     const localStream = useCallStore.getState().localStream;
     if (localStream) {
       localStream.getTracks().forEach((track: MediaStreamTrack) => {
         track.stop();
+        try { (track as any).release?.(); } catch (e) { /* no-op */ }
       });
+      try { (localStream as any).release?.(); } catch (e) { /* no-op */ }
     }
 
     // Stop all participant streams

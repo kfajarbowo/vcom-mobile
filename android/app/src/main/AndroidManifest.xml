@@ -18,6 +18,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
@@ -70,12 +71,17 @@
         android:taskAffinity=""
         android:exported="false" />
 
-      <!-- Background WebSocket Service -->
+      <!-- Background WebSocket Service.
+           Uses only the dataSync foreground-service type: unlike phoneCall it has no
+           runtime prerequisite on Android 14+ (phoneCall requires an active Telecom
+           call), so it starts reliably from the foreground, a sticky restart and boot.
+           stopWithTask=false keeps it alive when the task is swiped away. -->
       <service
         android:name=".BackgroundWebSocketService"
         android:enabled="true"
         android:exported="false"
-        android:foregroundServiceType="phoneCall|dataSync" />
+        android:stopWithTask="false"
+        android:foregroundServiceType="dataSync" />
 
       <!-- Headless JS Task Service for background call handling -->
       <service

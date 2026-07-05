@@ -14,6 +14,7 @@ import {apiRequest} from '../../services/apiClient';
 import {useAuthStore} from '../../store/authStore';
 import {useCallStore} from '../../store/callStore';
 import {webrtcService} from '../../services/webrtcService';
+import {websocketService} from '../../services/websocket';
 
 interface CallHistoryItem {
   id: number;
@@ -206,34 +207,57 @@ export function CallsScreen() {
   const handleCallback = async (call: CallHistoryItem) => {
     try {
       const callType = call.callType?.includes('video') ? 'video' : 'audio';
-      const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       if (call.callType?.startsWith('group_')) {
-        // Group call callback
+        // Group call callback — must use the GROUP protocol (start_group_call + startGroupCall),
+        // not the 1:1 startCall. The 1:1 path sends initiate_call/webrtc_offer with a null target
+        // (no receiverUserId), which the server broadcasts to everyone and no member ever rings.
         const conversationId = call.conversationId;
         if (!conversationId) {
           Alert.alert('Error', 'Conversation not found for this group call.');
           return;
         }
 
+        // Group callIds must carry the 'group_call_' prefix so the server routes hangups etc. as
+        // group calls (the server keys group behaviour off this prefix).
+        const groupCallId = `group_call_${Date.now()}_${user?.id}`;
+        const participantIds = call.participants
+          ?.map(id => parseInt(id))
+          .filter(id => !isNaN(id) && id !== user?.id) || [];
+
         console.log('[CallsScreen] Starting group callback:', {
-          callId,
+          groupCallId,
           callType,
           conversationId,
           groupName: call.contactName,
+          participantIds,
         });
 
         useCallStore.getState().startGroupCall({
-          callId,
+          callId: groupCallId,
           callType: callType as 'audio' | 'video',
-          participantIds: call.participants?.map(id => parseInt(id)) || [],
+          participantIds,
           conversationId,
           groupName: call.contactName,
         });
 
-        await webrtcService.startCall(callType as 'audio' | 'video');
+        websocketService.send({
+          type: 'start_group_call',
+          payload: {
+            callId: groupCallId,
+            groupId: conversationId,
+            groupName: call.contactName,
+            callType,
+            fromUserId: user?.id,
+            fromUserName: user?.callsign || user?.username || 'Unknown',
+          },
+        });
+
+        await webrtcService.startGroupCall(participantIds);
         return;
       }
+
+      const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       // 1:1 call callback
       const targetUserId = call.isOutgoing ? call.toUserId : call.fromUserId;
@@ -264,7 +288,10 @@ export function CallsScreen() {
         callType: callType as 'audio' | 'video',
         receiverUserId: targetUserId,
         receiverName: targetName,
-        conversationId: conversationId || targetUserId,
+        // Pass the real conversation id or null — do NOT substitute the peer's USER id, which the
+        // server would persist as the conversationId (a user id in a conversation-id field breaks
+        // history enrichment and rejoin lookups). The field is nullable server-side.
+        conversationId: (conversationId ?? null) as any,
       });
 
       await webrtcService.startCall(callType as 'audio' | 'video');

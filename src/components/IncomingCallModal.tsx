@@ -88,7 +88,24 @@ export function IncomingCallModal() {
     // Get fresh state from store
     const currentState = useCallStore.getState();
     if (currentState.isGroupCall) {
-      webrtcService.endGroupCall();
+      // Send reject_group_call so the group is told about the decline. endGroupCall() sends
+      // leave_group_call, but a ringing invitee was never in the participant set, so leaving is a
+      // no-op and the initiator is never notified the invite was declined.
+      import('../services/websocket').then(({ websocketService }) => {
+        import('../store/authStore').then(({ useAuthStore }) => {
+          const user = useAuthStore.getState().user;
+          websocketService.send({
+            type: 'reject_group_call',
+            payload: {
+              callId: currentState.callId,
+              groupId: currentState.conversationId,
+              fromUserId: user?.id,
+              userName: user?.callsign || user?.fullName,
+            },
+          });
+        });
+      });
+      currentState.endCall();
     } else {
       webrtcService.rejectCall();
     }

@@ -41,6 +41,9 @@ export type WebSocketMessage = {
   | 'force_webrtc_reconnect'
   | 'pong'
   | 'group_call_user_left'
+  | 'group_call_rejected'
+  | 'group_call_no_participants'
+  | 'group_participant_refresh'
   | 'message_deleted'
   | 'session_terminated'
   | 'webrtc_ready';

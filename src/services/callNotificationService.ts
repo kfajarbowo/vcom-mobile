@@ -8,6 +8,7 @@ import {
   NativeEventEmitter,
   Platform,
   AppRegistry,
+  AppState,
   EmitterSubscription,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -161,6 +162,18 @@ class CallNotificationService {
         return false;
       }
 
+      // On Android the native background foreground service posts the incoming-call
+      // notification whenever the app is NOT in the foreground. The JS WebSocket stays
+      // connected in the background too (the foreground service keeps the process alive),
+      // so if JS also posted here we would get a double ring/vibrate and a re-fired
+      // full-screen intent. Only self-post from JS while the app is foreground; let the
+      // native service own it when backgrounded. (iOS has no such native service, so it
+      // always posts here.)
+      if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+        console.log('[CallNotificationService] App not foreground; native service owns the call notification');
+        return false;
+      }
+
       console.log('[CallNotificationService] Showing notification:', data);
 
       return await CallNotificationNative.showIncomingCallNotification(
@@ -216,6 +229,27 @@ class CallNotificationService {
       } catch (error) {
         console.error('[CallNotificationService] Report call connected error:', error);
       }
+    }
+  }
+
+  /**
+   * Ask the OS to exempt the app from battery optimization (Android only).
+   *
+   * Without this the system freezes the background service's WebSocket in Doze /
+   * App-Standby once the screen has been off for a while, so incoming calls/chats
+   * never arrive. The native module is a no-op if the app is already exempt, and it
+   * only shows the system dialog once (it remembers that it already asked) so the
+   * user is not nagged on every foreground.
+   */
+  async requestBatteryOptimizationExemption(): Promise<boolean> {
+    try {
+      if (Platform.OS !== 'android' || !CallNotificationNative?.requestBatteryOptimizationExemption) {
+        return false;
+      }
+      return await CallNotificationNative.requestBatteryOptimizationExemption();
+    } catch (error) {
+      console.warn('[CallNotificationService] Battery optimization request error:', error);
+      return false;
     }
   }
 
