@@ -23,9 +23,15 @@ export function CallManager() {
         console.log('[CallManager] Call action from notification:', event);
         const callStore = useCallStore.getState();
 
+        // A stale lock-screen action (from a notification that outlived the call it belonged to)
+        // must not act on whatever call happens to be current now. Only honour an action whose
+        // callId matches the call we are ringing, when one is present.
+        const eventCallId = (event as any).callId;
+        const matchesCurrent = !eventCallId || !callStore.callId || eventCallId === callStore.callId;
+
         if (event.action === 'accept') {
           // If we have a pending call in ringing state, accept it
-          if (callStore.status === 'ringing') {
+          if (callStore.status === 'ringing' && matchesCurrent) {
             console.log('[CallManager] Accepting call from notification');
             callStore.setCallStatus('calling');
 
@@ -51,28 +57,55 @@ export function CallManager() {
                 }
               }
 
+              // The offer may still be in flight (the targeted webrtc_offer can lag the
+              // incoming_call, especially right after a background socket reconnect). Wait briefly
+              // for it before giving up.
+              if (!offer) {
+                for (let i = 0; i < 20 && !offer; i++) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  offer = useCallStore.getState().offer;
+                }
+              }
+
               if (offer) {
                 await webrtcService.answerCall(callStore.callType, offer);
               } else {
                 console.error('[CallManager] Cannot answer call - no offer available');
-                // Optionally show error to user
                 toast.show('Call failed: No connection offer', 'error');
-                callStore.endCall();
+                // Tell the server we could not take the call (rejectCall sends reject_call) so the
+                // caller stops ringing immediately, instead of a store-only reset that leaves the
+                // caller ringing until the 30s timeout.
+                webrtcService.rejectCall();
               }
             }
           }
         } else if (event.action === 'reject') {
           console.log('[CallManager] Rejecting call from notification');
           callNotificationService.cancelCallNotification();
-          if (callStore.isGroupCall) {
-            webrtcService.endGroupCall();
-          } else {
-            webrtcService.rejectCall();
+          // Only tear down a call if this decline is for the call we're actually ringing.
+          if (callStore.status === 'ringing' && matchesCurrent) {
+            if (callStore.isGroupCall) {
+              // Send reject_group_call (not leave_group_call): the invitee was never in the
+              // participant set, so leaving is a no-op and the group is never told about the decline.
+              const me = useAuthStore.getState().user;
+              websocketService.send({
+                type: 'reject_group_call',
+                payload: {
+                  callId: callStore.callId,
+                  groupId: callStore.conversationId,
+                  fromUserId: me?.id,
+                  userName: me?.callsign || me?.fullName,
+                },
+              });
+              callStore.endCall();
+            } else {
+              webrtcService.rejectCall();
+            }
           }
         } else if (event.action === 'missed') {
           console.log('[CallManager] Call missed (timeout)');
           callNotificationService.cancelCallNotification();
-          if (callStore.status === 'ringing') {
+          if (callStore.status === 'ringing' && matchesCurrent) {
             callStore.endCall();
           }
         }
@@ -87,8 +120,20 @@ export function CallManager() {
   useEffect(() => {
     console.log('[CallManager] Setting up WebRTC signaling handlers');
 
-    // Buffer for offers that arrive before incoming_call
-    const pendingOffers = new Map<string, any>();
+    // Buffer for offers that arrive before incoming_call. Web clients send offers untargeted and
+    // the server broadcasts them to every user, so this device receives the SDP of every
+    // web-initiated 1:1 call in the org. Entries not addressed to us are never consumed, so we
+    // store a timestamp and evict anything older than 60s to stop unbounded growth.
+    const pendingOffers = new Map<string, { offer: any; ts: number }>();
+    const PENDING_OFFER_TTL_MS = 60000;
+    const sweepPendingOffers = () => {
+      const now = Date.now();
+      for (const [id, entry] of pendingOffers) {
+        if (now - entry.ts > PENDING_OFFER_TTL_MS) {
+          pendingOffers.delete(id);
+        }
+      }
+    };
 
     const removeHandler = websocketService.addMessageHandler(async (message: WebSocketMessage) => {
       try {
@@ -101,6 +146,11 @@ export function CallManager() {
           'group_webrtc_offer', 'group_webrtc_answer', 'group_webrtc_ice_candidate',
           'initiate_group_webrtc', 'participant_joined', 'participant_left',
           'leave_group_call', 'force_webrtc_reconnect', 'call_missed',
+          // Group-call lifecycle signals the server emits that were previously dropped:
+          // group cancelled/ended, a participant hung up, an invitee declined, nobody online,
+          // and the web client's mesh-repair request.
+          'group_call_ended', 'group_call_user_left', 'group_call_rejected',
+          'group_call_no_participants', 'group_participant_refresh',
         ]);
         if (!callMessageTypes.has(message.type)) return;
 
@@ -135,7 +185,8 @@ export function CallManager() {
               console.log('[CallManager] Setting up incoming call');
 
               // Check if we already received an offer for this callId
-              const pendingOffer = pendingOffers.get(callId);
+              const pendingEntry = pendingOffers.get(callId);
+              const pendingOffer = pendingEntry?.offer;
               if (pendingOffer) {
                 console.log('[CallManager] 🎯 Found pending offer that arrived before incoming_call!');
                 pendingOffers.delete(callId); // Remove from buffer
@@ -177,6 +228,8 @@ export function CallManager() {
               }
             } else {
               console.log('[CallManager] ⚠️ Already in a call, ignoring incoming_call');
+              // Drop any buffered offer for this call we're rejecting so it doesn't linger.
+              pendingOffers.delete(callId);
               // Send busy signal
               websocketService.send({
                 type: 'reject_call',
@@ -249,11 +302,17 @@ export function CallManager() {
                   callStore.reset();
                 }
               }, 35000); // 35 seconds (Android notification timeout is 30s)
+            } else if ((callStore.status === 'active' || callStore.status === 'calling') && callStore.callId === callId && !callStore.isGroupCall) {
+              // A second offer for the call we're already in = renegotiation (ICE restart, or the
+              // peer enabling video mid-call). Apply it and answer without disturbing media.
+              console.log('[CallManager] 🔁 Renegotiation offer for active call');
+              await webrtcService.handleRenegotiationOffer(offer);
             } else if (callStore.status === 'idle') {
               // webrtc_offer arrived before incoming_call
               // Buffer it and let incoming_call set up the call state to avoid race condition
               console.warn('[CallManager] ⚠️ Received webrtc_offer before incoming_call - buffering');
-              pendingOffers.set(callId, offer);
+              sweepPendingOffers();
+              pendingOffers.set(callId, { offer, ts: Date.now() });
               console.log('[CallManager] Offer buffered for callId:', callId);
             } else {
               console.log('[CallManager] ⚠️ Unexpected state - received offer for callId:', callId, 'but current status is:', callStore.status, 'with callId:', callStore.callId);
@@ -268,8 +327,19 @@ export function CallManager() {
 
             // Handle both message structures
             const payload = message.payload || message;
-            const { answer } = payload as any;
-            console.log('[CallManager] Extracted answer:', answer);
+            const { answer, callId: answerCallId } = payload as any;
+
+            // Drop answers that don't belong to our current call. The web client sends answers
+            // untargeted and the server broadcasts them to everyone, so without this a foreign
+            // call's answer could be applied to (and wedge) our in-progress call.
+            if (callStore.isGroupCall) {
+              console.log('[CallManager] Ignoring 1:1 answer while in a group call');
+              break;
+            }
+            if (answerCallId && callStore.callId && answerCallId !== callStore.callId) {
+              console.log('[CallManager] Ignoring answer for different callId:', answerCallId, 'current:', callStore.callId);
+              break;
+            }
 
             // Process answer if call is in calling or active state
             // (active state can happen if call_accepted arrives before webrtc_answer)
@@ -289,10 +359,27 @@ export function CallManager() {
             // Structure 1: { type, payload: { callId, candidate } }
             // Structure 2: { type, callId, candidate } (what server sends)
             const candidate = message.payload?.candidate || (message as any).candidate;
+            const iceCallId = message.payload?.callId ?? (message as any).callId;
 
             if (!candidate) {
               console.error('[CallManager] ❌ No candidate found!');
               console.error('[CallManager] Message:', JSON.stringify(message, null, 2));
+              break;
+            }
+
+            // Only accept 1:1 ICE for the current 1:1 call. Reject while in a group call, when idle
+            // (no call to attach them to — otherwise foreign broadcast candidates accumulate and get
+            // injected into the next real call), or when the callId doesn't match.
+            if (callStore.isGroupCall) {
+              console.log('[CallManager] Ignoring 1:1 ICE while in a group call');
+              break;
+            }
+            if (!callStore.callId) {
+              console.log('[CallManager] Ignoring 1:1 ICE while idle (no active/ringing call)');
+              break;
+            }
+            if (iceCallId && iceCallId !== callStore.callId) {
+              console.log('[CallManager] Ignoring ICE for different callId:', iceCallId, 'current:', callStore.callId);
               break;
             }
 
@@ -303,7 +390,12 @@ export function CallManager() {
 
           case 'call_accepted': {
             console.log('[CallManager] 🎉 Call accepted by remote peer!');
-            console.log('[CallManager] Updating status to active');
+            const payload = message.payload || message;
+            const { callId: acceptedCallId } = payload as any;
+            if (acceptedCallId && callStore.callId && acceptedCallId !== callStore.callId) {
+              console.log('[CallManager] Ignoring call_accepted for different callId');
+              break;
+            }
             // Change status from "calling" to "active"
             if (callStore.status === 'calling') {
               callStore.setCallStatus('active');
@@ -313,6 +405,14 @@ export function CallManager() {
 
           case 'end_call':
           case 'call_ended': {
+            const payload = message.payload || message;
+            const { callId: endedCallId } = payload as any;
+            // Only end if this termination is for the call we're actually in. A stale/misrouted
+            // call_ended for a previous callId must not tear down a new call.
+            if (endedCallId && callStore.callId && endedCallId !== callStore.callId) {
+              console.log('[CallManager] Ignoring end_call/call_ended for different callId:', endedCallId);
+              break;
+            }
             console.log('[CallManager] Call ended by remote peer');
             callNotificationService.cancelCallNotification();
             if (callStore.isGroupCall) {
@@ -324,6 +424,12 @@ export function CallManager() {
           }
 
           case 'call_rejected': {
+            const payload = message.payload || message;
+            const { callId: rejectedCallId } = payload as any;
+            if (rejectedCallId && callStore.callId && rejectedCallId !== callStore.callId) {
+              console.log('[CallManager] Ignoring call_rejected for different callId');
+              break;
+            }
             console.log('[CallManager] Call rejected by remote peer');
             callNotificationService.cancelCallNotification();
             toast.show('Call was declined', 'info');
@@ -444,6 +550,18 @@ export function CallManager() {
                 callType: callType || 'audio',
                 isGroupCall: true,
               });
+
+              // Auto-reset if the group ring is never answered, mirroring the 1:1 paths. Without
+              // this a cancelled group call leaves the invitee stuck 'ringing' forever (which also
+              // busy-rejects every subsequent incoming call).
+              setTimeout(() => {
+                const s = useCallStore.getState();
+                if (s.callId === callId && s.status === 'ringing') {
+                  console.log('[CallManager] ⏱️ Group call ring timed out, resetting');
+                  callNotificationService.cancelCallNotification();
+                  s.reset();
+                }
+              }, 35000);
             } else {
               console.log('[CallManager] ⚠️ Already in a call (status:', callStore.status, '), ignoring incoming group call');
 
@@ -471,6 +589,13 @@ export function CallManager() {
             console.log('[CallManager] Join group call message received');
             const payload = message.payload || message;
             const { callId, participants, groupName } = payload as any;
+
+            // Ignore updates that aren't for our current group call (a different group's call could
+            // otherwise inject phantom participants into this one).
+            if (!callStore.isGroupCall || (callId && callStore.callId && callId !== callStore.callId)) {
+              console.log('[CallManager] Ignoring join_group_call for a call we are not in');
+              break;
+            }
 
             // Add participants to call store if not already added
             if (participants && Array.isArray(participants)) {
@@ -505,6 +630,14 @@ export function CallManager() {
             console.log('[CallManager] Group call participants update received');
             const payload = message.payload || message;
             const { callId, participants, participantData, newParticipant } = payload as any;
+
+            // Only apply updates for the group call we're actually in. The server's rejoin path
+            // broadcasts this to ALL group members, so a different group's update would otherwise
+            // inject streamless ghost tiles into our current call.
+            if (!callStore.isGroupCall || (callId && callStore.callId && callId !== callStore.callId)) {
+              console.log('[CallManager] Ignoring participants update for a call we are not in');
+              break;
+            }
 
             console.log('[CallManager] Participants update:', {
               callId,
@@ -683,21 +816,93 @@ export function CallManager() {
 
           case 'call_missed': {
             const missedPayload = message.payload || message;
-            const { reason, fromUserName } = missedPayload as any;
+            const { reason, fromUserName, callId: missedCallId } = missedPayload as any;
             console.log('[CallManager] Call missed:', reason, fromUserName);
-            callNotificationService.cancelCallNotification();
 
             if (reason === 'offline' && fromUserName) {
-              // Missed call notification delivered on reconnect
+              // Missed call notification delivered on reconnect — informational only, do NOT tear
+              // down whatever call may be active now.
               toast.show(`Missed call from ${fromUserName}`, 'info');
             } else {
-              // Caller side - call was not answered
+              // Caller side - call was not answered. Only end if it's for our current call.
+              if (missedCallId && callStore.callId && missedCallId !== callStore.callId) {
+                console.log('[CallManager] Ignoring call_missed for different callId');
+                break;
+              }
+              callNotificationService.cancelCallNotification();
               toast.show('Call was not answered', 'info');
               if (callStore.isGroupCall) {
                 webrtcService.endGroupCall();
               } else {
                 webrtcService.endCall();
               }
+            }
+            break;
+          }
+
+          case 'group_call_ended': {
+            // The whole group call ended (last participant left, or the initiator cancelled).
+            const payload = message.payload || message;
+            const { callId: endedCallId, groupId } = payload as any;
+            const inThisCall = callStore.isGroupCall && (
+              (endedCallId && callStore.callId === endedCallId) ||
+              (groupId != null && callStore.conversationId === groupId)
+            );
+            if (inThisCall || (callStore.isGroupCall && !endedCallId && !groupId)) {
+              console.log('[CallManager] Group call ended, tearing down');
+              callNotificationService.cancelCallNotification();
+              // endGroupCall works whether we were ringing or active; it resets the store.
+              webrtcService.endGroupCall();
+            } else {
+              console.log('[CallManager] Ignoring group_call_ended for a call we are not in');
+            }
+            break;
+          }
+
+          case 'group_call_user_left': {
+            // The web client leaves a group call via end_call{isGroupCall}; the server relays this
+            // top-level shape (no payload wrapper, no callId — just userId/roomId).
+            const payload = message.payload || message;
+            const { userId: leftUserId, roomId } = payload as any;
+            if (callStore.isGroupCall && leftUserId != null &&
+                (roomId == null || callStore.conversationId === roomId)) {
+              console.log('[CallManager] Group participant left:', leftUserId);
+              webrtcService.removeGroupParticipant(leftUserId);
+            }
+            break;
+          }
+
+          case 'group_call_rejected': {
+            // An invitee declined. Inform the initiator; teardown is handled by the ring timeout /
+            // group_call_ended so a single decline doesn't drop a call others may still join.
+            const payload = message.payload || message;
+            const { rejectedByUserName } = payload as any;
+            if (callStore.isGroupCall) {
+              toast.show(`${rejectedByUserName || 'A member'} declined the call`, 'info');
+            }
+            break;
+          }
+
+          case 'group_call_no_participants': {
+            // No group members were online to receive the invitation.
+            if (callStore.isGroupCall && callStore.status === 'calling') {
+              console.log('[CallManager] Group call: no participants online');
+              toast.show('No group members are online to answer', 'info');
+              callNotificationService.cancelCallNotification();
+              webrtcService.endGroupCall();
+            }
+            break;
+          }
+
+          case 'group_participant_refresh': {
+            // The web client asks us to re-offer to a peer whose mesh leg broke.
+            const payload = message.payload || message;
+            const { fromUserId, callId: refreshCallId } = payload as any;
+            if (callStore.isGroupCall && fromUserId != null &&
+                (!refreshCallId || callStore.callId === refreshCallId) &&
+                fromUserId !== currentUser?.id) {
+              console.log('[CallManager] Group participant refresh — re-offering to:', fromUserId);
+              await webrtcService.createGroupOffer(fromUserId);
             }
             break;
           }

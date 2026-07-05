@@ -10,8 +10,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -332,6 +334,12 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
     fun startBackgroundService(url: String, tokenOrUserId: String, promise: Promise) {
         try {
             Log.d(TAG, "Starting background service with URL: $url")
+
+            // Persist config so the service can be restarted after a reboot (BootReceiver)
+            // or a START_STICKY process kill (onStartCommand null-intent path) without the
+            // JS layer being alive.
+            BootReceiver.saveServiceConfig(reactApplicationContext, url, tokenOrUserId, true)
+
             val intent = Intent(reactApplicationContext, BackgroundWebSocketService::class.java).apply {
                 action = "START"
                 putExtra("url", url)
@@ -354,12 +362,57 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stopBackgroundService(promise: Promise) {
         try {
+            // Clear persisted config so we do NOT restart on boot / sticky restart after
+            // the user has logged out or explicitly disabled the service.
+            BootReceiver.clearServiceConfig(reactApplicationContext)
+
             val intent = Intent(reactApplicationContext, BackgroundWebSocketService::class.java).apply {
                 action = "STOP"
             }
             reactApplicationContext.stopService(intent)
             promise.resolve(true)
         } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun requestBatteryOptimizationExemption(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                promise.resolve(true) // Doze does not exist before Android 6
+                return
+            }
+
+            val context = reactApplicationContext
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+
+            if (powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                promise.resolve(true) // Already exempt
+                return
+            }
+
+            // Only surface the system dialog once so the user is not nagged repeatedly.
+            val prefs = context.getSharedPreferences("VCommServicePrefs", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("batteryOptRequested", false)) {
+                promise.resolve(false)
+                return
+            }
+
+            val activity = currentActivity
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                if (activity == null) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            (activity ?: context).startActivity(intent)
+            // Only record that we asked AFTER the dialog was actually launched, so a
+            // failed startActivity does not permanently suppress the one-time prompt.
+            prefs.edit().putBoolean("batteryOptRequested", true).apply()
+            promise.resolve(false) // request shown; user decides
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting battery optimization exemption: ${e.message}")
             promise.reject("ERROR", e.message)
         }
     }

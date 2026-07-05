@@ -11,7 +11,7 @@ import { websocketService } from './websocket';
 import { useCallStore, CallType } from '../store/callStore';
 import { useAuthStore } from '../store/authStore';
 import { requestCameraAndMicrophonePermissions } from '../utils/permissions';
-import { getIceServers, getMediaConstraints, getInCallManagerOptions } from './webrtcConfig';
+import { getIceServers, getMediaConstraints, getAudioOnlyConstraints, getInCallManagerOptions } from './webrtcConfig';
 
 /**
  * OneOnOneCallService
@@ -21,6 +21,46 @@ export class OneOnOneCallService {
   private peerConnection: any = null;
   private pendingIceCandidates: RTCIceCandidate[] = [];
   private isInitializing: boolean = false;
+  private iceRestartAttempts: number = 0;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly MAX_ICE_RESTARTS = 2;
+  private static readonly DISCONNECT_GRACE_MS = 6000;
+
+  // The other party in the current call (caller when we are the callee, receiver when we called).
+  private getOtherUserId(): number | null {
+    const s = useCallStore.getState();
+    return s.isIncoming ? s.callerUserId : s.receiverUserId;
+  }
+
+  private clearDisconnectTimer(): void {
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
+  }
+
+  // True if the call we were setting up is no longer the current one (cancelled / replaced / reset).
+  private aborted(capturedCallId: string | null): boolean {
+    const s = useCallStore.getState();
+    return s.status === 'idle' || s.callId !== capturedCallId;
+  }
+
+  // Release a just-acquired stream and tear down the half-built peer connection after an aborted
+  // setup, so no camera/mic capture leaks.
+  private abortSetup(stream?: MediaStream | null): void {
+    try {
+      stream?.getTracks().forEach((track: MediaStreamTrack) => {
+        track.stop();
+        try { (track as any).release?.(); } catch (e) { /* no-op */ }
+      });
+    } catch (e) { /* no-op */ }
+    if (this.peerConnection) {
+      try { this.peerConnection.close(); } catch (e) { /* no-op */ }
+      this.peerConnection = null;
+    }
+    this.pendingIceCandidates = [];
+    InCallManager.stop();
+  }
 
   // Initialize peer connection
   async initializePeerConnection(): Promise<void> {
@@ -134,12 +174,26 @@ export class OneOnOneCallService {
 
       if (state === 'connected' || state === 'completed') {
         console.log('[WebRTC 1:1] ✅ ICE connected! Setting status to active');
+        this.clearDisconnectTimer();
+        this.iceRestartAttempts = 0;
         useCallStore.getState().setCallStatus('active');
       } else if (state === 'failed') {
-        console.log('[WebRTC 1:1] ❌ ICE connection failed - check TURN server');
-        this.endCall();
+        // Don't hang up on the first failure — mobile networks blip constantly. Attempt a bounded
+        // ICE restart (re-offer with iceRestart) and only end the call if recovery is exhausted.
+        console.log('[WebRTC 1:1] ❌ ICE connection failed - attempting recovery');
+        this.tryIceRestart();
       } else if (state === 'disconnected') {
-        console.log('[WebRTC 1:1] ⚠️ ICE disconnected - connection lost');
+        // 'disconnected' is often transient and self-heals. Give it a grace window before treating
+        // it as a failure and attempting a restart.
+        console.log('[WebRTC 1:1] ⚠️ ICE disconnected - starting grace timer');
+        this.clearDisconnectTimer();
+        this.disconnectTimer = setTimeout(() => {
+          const st = this.peerConnection?.iceConnectionState;
+          if (st === 'disconnected' || st === 'failed') {
+            console.log('[WebRTC 1:1] ICE still', st, 'after grace period - attempting recovery');
+            this.tryIceRestart();
+          }
+        }, OneOnOneCallService.DISCONNECT_GRACE_MS);
       } else if (state === 'checking') {
         console.log('[WebRTC 1:1] 🔍 ICE checking - gathering candidates...');
       }
@@ -167,13 +221,20 @@ export class OneOnOneCallService {
     const hasPermissions = await requestCameraAndMicrophonePermissions();
 
     if (!hasPermissions) {
-      throw new Error('Camera/Microphone permissions not granted');
+      throw new Error('Microphone permission not granted');
     }
 
-    const constraints = getMediaConstraints();
-
     try {
-      const stream = await mediaDevices.getUserMedia(constraints);
+      // Try audio+video first so mid-call video works when a camera is available. If the camera is
+      // denied or busy (NotReadableError), fall back to audio-only so the call still succeeds
+      // instead of tearing down. Video calls that fall back become audio-only (best effort).
+      let stream: MediaStream;
+      try {
+        stream = await mediaDevices.getUserMedia(getMediaConstraints(true));
+      } catch (videoError) {
+        console.warn('[WebRTC 1:1] getUserMedia with video failed, falling back to audio-only:', videoError);
+        stream = await mediaDevices.getUserMedia(getAudioOnlyConstraints());
+      }
       console.log('[WebRTC 1:1] Got user media stream');
       console.log('[WebRTC 1:1] Stream ID:', stream.id);
       console.log('[WebRTC 1:1] Audio tracks:', stream.getAudioTracks().length);
@@ -225,6 +286,9 @@ export class OneOnOneCallService {
     }
 
     this.isInitializing = true;
+    // Capture the call identity at entry so we can detect if the caller cancels (or a different
+    // call replaces this one) while we run the ~0.3-2s of async setup below.
+    const capturedCallId = useCallStore.getState().callId;
 
     try {
       console.log('[WebRTC 1:1] Starting call:', callType);
@@ -239,17 +303,27 @@ export class OneOnOneCallService {
         useCallStore.getState().setRemoteStream(null);
       }
 
-      // Start audio session — earpiece by default (camera starts off)
+      // Start audio session. Video calls route to the loudspeaker; audio calls use the earpiece.
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(false);
-      console.log('[WebRTC 1:1] Audio session started, speaker: false');
+      const useSpeaker = callType === 'video';
+      InCallManager.setForceSpeakerphoneOn(useSpeaker);
+      useCallStore.setState({ isSpeakerEnabled: useSpeaker });
+      console.log('[WebRTC 1:1] Audio session started, speaker:', useSpeaker);
 
       // Initialize peer connection
       await this.initializePeerConnection();
 
       // Get user media
       const stream = await this.getUserMedia(callType);
+
+      // The caller may have cancelled (or a different call started) while media was acquiring. If
+      // so, release what we grabbed and abort — otherwise the mic/camera stay hot with no UI and
+      // we'd send signaling with a null target (which the server broadcasts to everyone).
+      if (this.aborted(capturedCallId)) {
+        this.abortSetup(stream);
+        return;
+      }
 
       // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC 1:1] Adding tracks to peer connection');
@@ -281,6 +355,14 @@ export class OneOnOneCallService {
       // Send offer via WebSocket
       const callState = useCallStore.getState();
       const { user } = useAuthStore.getState();
+
+      // Never emit signaling with a null callId/target: the server broadcasts toUserId-less
+      // messages to every connected user, poisoning other calls.
+      if (this.aborted(capturedCallId) || !callState.callId || !callState.receiverUserId) {
+        console.warn('[WebRTC 1:1] Aborting outgoing call — missing callId/receiver or call cancelled');
+        this.abortSetup(stream);
+        return;
+      }
 
       // First, send initiate_call to notify recipient
       websocketService.send({
@@ -333,6 +415,7 @@ export class OneOnOneCallService {
     }
 
     this.isInitializing = true;
+    const capturedCallId = useCallStore.getState().callId;
 
     try {
       console.log('[WebRTC 1:1] Answering call:', callType);
@@ -352,21 +435,33 @@ export class OneOnOneCallService {
       const savedIceCandidates = [...this.pendingIceCandidates];
       console.log('[WebRTC 1:1] Saved', savedIceCandidates.length, 'ICE candidates received while ringing');
 
-      // Start audio session — earpiece by default (camera starts off)
+      // Start audio session. Video calls route to the loudspeaker; audio calls use the earpiece.
       const options = getInCallManagerOptions(callType);
       InCallManager.start(options);
-      InCallManager.setForceSpeakerphoneOn(false);
-      console.log('[WebRTC 1:1] Audio session started, speaker: false');
+      const useSpeaker = callType === 'video';
+      InCallManager.setForceSpeakerphoneOn(useSpeaker);
+      useCallStore.setState({ isSpeakerEnabled: useSpeaker });
+      console.log('[WebRTC 1:1] Audio session started, speaker:', useSpeaker);
 
       // Initialize peer connection (this clears pendingIceCandidates)
       await this.initializePeerConnection();
 
-      // Restore saved ICE candidates so they can be added after remote description is set
-      this.pendingIceCandidates = savedIceCandidates;
-      console.log('[WebRTC 1:1] Restored', savedIceCandidates.length, 'saved ICE candidates');
+      // Restore saved ICE candidates so they can be added after remote description is set.
+      // Prepend (not overwrite): candidates that trickled in during initializePeerConnection's
+      // async work were pushed onto the freshly-cleared queue and must be kept too.
+      this.pendingIceCandidates = [...savedIceCandidates, ...this.pendingIceCandidates];
+      console.log('[WebRTC 1:1] Restored', savedIceCandidates.length, 'saved ICE candidates (total queued:', this.pendingIceCandidates.length, ')');
 
       // Get user media
       const stream = await this.getUserMedia(callType);
+
+      // The caller may have cancelled while we were acquiring media (a very common race). Abort
+      // cleanly rather than building a live pc into an idle store and sending a null-target answer.
+      if (this.aborted(capturedCallId)) {
+        console.warn('[WebRTC 1:1] Call no longer active after media acquisition, aborting answer');
+        this.abortSetup(stream);
+        return;
+      }
 
       // Add local stream to peer connection in consistent order (audio first, then video)
       console.log('[WebRTC 1:1] Adding tracks to peer connection');
@@ -397,6 +492,14 @@ export class OneOnOneCallService {
       // Get call state
       const callState = useCallStore.getState();
       const { user } = useAuthStore.getState();
+
+      // Guard against a cancelled/reset call: never emit accept_call/webrtc_answer with a null
+      // callId or caller — the server would broadcast the answer to every user.
+      if (this.aborted(capturedCallId) || !callState.callId || !callState.callerUserId) {
+        console.warn('[WebRTC 1:1] Aborting answer send — missing callId/caller or call cancelled');
+        this.abortSetup(useCallStore.getState().localStream);
+        return;
+      }
 
       // Send accept_call message to server to notify the caller
       websocketService.send({
@@ -452,6 +555,117 @@ export class OneOnOneCallService {
       this.addPendingIceCandidates();
     } catch (error) {
       console.error('[WebRTC 1:1] ❌ Error handling answer:', error);
+    }
+  }
+
+  // Attempt a bounded ICE restart by creating a fresh offer with iceRestart:true and re-sending it.
+  // The peer applies it via handleRenegotiationOffer (a webrtc_offer for the current active call).
+  private async tryIceRestart(): Promise<void> {
+    if (!this.peerConnection) return;
+    if ((this.peerConnection.signalingState as string) === 'closed') return;
+
+    if (this.iceRestartAttempts >= OneOnOneCallService.MAX_ICE_RESTARTS) {
+      console.log('[WebRTC 1:1] ICE restart budget exhausted - ending call');
+      this.clearDisconnectTimer();
+      this.endCall();
+      return;
+    }
+    this.iceRestartAttempts++;
+
+    try {
+      const otherUserId = this.getOtherUserId();
+      const callState = useCallStore.getState();
+      if (!otherUserId || !callState.callId) {
+        console.warn('[WebRTC 1:1] Cannot ICE-restart: missing peer or callId');
+        return;
+      }
+
+      console.log('[WebRTC 1:1] 🔄 ICE restart attempt', this.iceRestartAttempts);
+      const offer = await this.peerConnection.createOffer({ iceRestart: true });
+      await this.peerConnection.setLocalDescription(offer);
+
+      websocketService.send({
+        type: 'webrtc_offer',
+        payload: {
+          callId: callState.callId,
+          toUserId: otherUserId,
+          offer: { type: offer.type, sdp: offer.sdp },
+          callType: callState.callType,
+          callerUserId: useAuthStore.getState().user?.id,
+          renegotiation: true,
+        },
+      });
+      console.log('[WebRTC 1:1] Sent ICE-restart offer to', otherUserId);
+    } catch (error) {
+      console.error('[WebRTC 1:1] ICE restart failed:', error);
+    }
+  }
+
+  // Handle a webrtc_offer that arrives for the CURRENT active/connecting call — a renegotiation
+  // (ICE restart, or the peer enabling video mid-call). Apply it and answer, without disturbing
+  // the existing media/tracks.
+  async handleRenegotiationOffer(offer: RTCSessionDescription): Promise<void> {
+    try {
+      if (!this.peerConnection) {
+        console.warn('[WebRTC 1:1] No peer connection for renegotiation offer');
+        return;
+      }
+      const sigState = this.peerConnection.signalingState;
+      if (sigState !== 'stable') {
+        // Glare: both sides offered at once. Let the existing flow settle rather than colliding.
+        console.warn('[WebRTC 1:1] Ignoring renegotiation offer in non-stable state:', sigState);
+        return;
+      }
+
+      console.log('[WebRTC 1:1] Applying renegotiation offer');
+      await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await this.peerConnection.createAnswer();
+      await this.peerConnection.setLocalDescription(answer);
+
+      const otherUserId = this.getOtherUserId();
+      const callState = useCallStore.getState();
+      if (otherUserId && callState.callId) {
+        websocketService.send({
+          type: 'webrtc_answer',
+          payload: {
+            callId: callState.callId,
+            toUserId: otherUserId,
+            answer: { type: answer.type, sdp: answer.sdp },
+          },
+        });
+        console.log('[WebRTC 1:1] Sent renegotiation answer to', otherUserId);
+      }
+      this.addPendingIceCandidates();
+    } catch (error) {
+      console.error('[WebRTC 1:1] Error handling renegotiation offer:', error);
+    }
+  }
+
+  // Trigger a renegotiation offer (e.g. after enabling video mid-call when no video is negotiated).
+  async renegotiate(): Promise<void> {
+    if (!this.peerConnection) return;
+    if ((this.peerConnection.signalingState as string) !== 'stable') return;
+    try {
+      const otherUserId = this.getOtherUserId();
+      const callState = useCallStore.getState();
+      if (!otherUserId || !callState.callId) return;
+
+      const offer = await this.peerConnection.createOffer({});
+      await this.peerConnection.setLocalDescription(offer);
+      websocketService.send({
+        type: 'webrtc_offer',
+        payload: {
+          callId: callState.callId,
+          toUserId: otherUserId,
+          offer: { type: offer.type, sdp: offer.sdp },
+          callType: callState.callType,
+          callerUserId: useAuthStore.getState().user?.id,
+          renegotiation: true,
+        },
+      });
+      console.log('[WebRTC 1:1] Sent renegotiation offer (mid-call) to', otherUserId);
+    } catch (error) {
+      console.error('[WebRTC 1:1] Error renegotiating:', error);
     }
   }
 
@@ -529,9 +743,10 @@ export class OneOnOneCallService {
           payload: {
             callId: callState.callId,
             toUserId: otherUserId,
+            reason: 'declined',
           },
         });
-        console.log('[WebRTC 1:1] Sent reject_call to caller', otherUserId);
+        console.log('[WebRTC 1:1] Sent reject_call (declined) to caller', otherUserId);
       } else {
         console.warn('[WebRTC 1:1] Could not determine caller to notify about rejection');
       }
@@ -544,6 +759,9 @@ export class OneOnOneCallService {
   // End call
   endCall(): void {
     console.log('[WebRTC 1:1] Ending call');
+
+    this.clearDisconnectTimer();
+    this.iceRestartAttempts = 0;
 
     // Stop audio session
     InCallManager.stop();
@@ -567,13 +785,17 @@ export class OneOnOneCallService {
       }
     }
 
-    // Stop all local tracks
+    // Stop AND release all local tracks. In react-native-webrtc, track.stop() only marks the track
+    // ended; native disposal (camera capturer + its SurfaceTextureHelper thread, audio source)
+    // happens via release(). Without this every call leaks a capturer + thread + native tracks.
     const localStream = useCallStore.getState().localStream;
     if (localStream) {
       localStream.getTracks().forEach((track: MediaStreamTrack) => {
         track.stop();
-        console.log('[WebRTC 1:1] Stopped local track:', track.kind);
+        try { (track as any).release?.(); } catch (e) { /* older RN-WebRTC without release() */ }
+        console.log('[WebRTC 1:1] Stopped+released local track:', track.kind);
       });
+      try { (localStream as any).release?.(); } catch (e) { /* no-op */ }
     }
 
     // Stop all remote tracks

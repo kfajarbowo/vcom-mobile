@@ -33,15 +33,14 @@ export async function requestCameraAndMicrophonePermissions(): Promise<boolean> 
       console.log('[Permissions] Camera granted:', cameraGranted === PermissionsAndroid.RESULTS.GRANTED);
       console.log('[Permissions] Audio granted:', audioGranted === PermissionsAndroid.RESULTS.GRANTED);
 
-      const bothGranted =
-        cameraGranted === PermissionsAndroid.RESULTS.GRANTED &&
-        audioGranted === PermissionsAndroid.RESULTS.GRANTED;
-
-      if (bothGranted) {
-        console.log('[Permissions] Camera and microphone permissions granted');
+      // The microphone is the ONLY hard requirement for a call. The camera is optional — a voice
+      // call (and even a video call downgraded to audio-only) must still be possible when the
+      // camera is denied or in use by another app. getUserMedia falls back to audio-only when the
+      // camera is unavailable, so we gate call setup on the mic alone.
+      if (audioGranted === PermissionsAndroid.RESULTS.GRANTED) {
         return true;
       } else {
-        console.warn('[Permissions] Camera or microphone permissions denied');
+        console.warn('[Permissions] Microphone permission denied — cannot place/answer a call');
         return false;
       }
     } catch (err) {
@@ -57,10 +56,8 @@ export async function requestCameraAndMicrophonePermissions(): Promise<boolean> 
       console.log('[Permissions] iOS camera result:', cameraResult);
       console.log('[Permissions] iOS microphone result:', micResult);
 
-      return (
-        (cameraResult === RESULTS.GRANTED || cameraResult === RESULTS.LIMITED) &&
-        (micResult === RESULTS.GRANTED || micResult === RESULTS.LIMITED)
-      );
+      // Microphone mandatory; camera optional (video degrades to audio-only).
+      return micResult === RESULTS.GRANTED || micResult === RESULTS.LIMITED;
     } catch (err) {
       console.error('[Permissions] Error requesting iOS permissions:', err);
       return false;

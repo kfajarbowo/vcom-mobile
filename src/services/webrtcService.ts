@@ -23,6 +23,14 @@ class WebRTCService {
     return oneOnOneCallService.handleAnswer(answer);
   }
 
+  async handleRenegotiationOffer(offer: RTCSessionDescription): Promise<void> {
+    return oneOnOneCallService.handleRenegotiationOffer(offer);
+  }
+
+  async renegotiate(): Promise<void> {
+    return oneOnOneCallService.renegotiate();
+  }
+
   async handleIceCandidate(candidate: RTCIceCandidate): Promise<void> {
     return oneOnOneCallService.handleIceCandidate(candidate);
   }

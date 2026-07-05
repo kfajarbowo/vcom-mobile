@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useCallStore } from '../store/callStore';
@@ -69,6 +69,19 @@ export function ActiveCallScreen() {
     }
   };
 
+  // The hardware back button / gesture must not silently drop a live call. Confirm first.
+  const handleRequestClose = () => {
+    Alert.alert('End call?', 'Do you want to end this call?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'End Call', style: 'destructive', onPress: handleEndCall },
+    ]);
+  };
+
+  // Only treat the remote pane as video when the remote stream actually carries a live video track.
+  // isRemoteVideoEnabled defaults true and only reflects mute events, so for an audio call (no
+  // remote video track at all) it would otherwise render a full-screen black RTCView.
+  const remoteHasVideo = !!remoteStream && remoteStream.getVideoTracks().length > 0;
+
   if (!isVisible) {
     return null;
   }
@@ -78,11 +91,11 @@ export function ActiveCallScreen() {
       visible={isVisible}
       animationType="slide"
       presentationStyle="fullScreen"
-      onRequestClose={handleEndCall}>
+      onRequestClose={handleRequestClose}>
       <View style={styles.container}>
         {/* Remote Video/Avatar */}
         <View style={styles.remoteVideoContainer}>
-          {remoteStream && isRemoteVideoEnabled ? (
+          {remoteStream && isRemoteVideoEnabled && remoteHasVideo ? (
             <RTCView
               streamURL={remoteStream.toURL()}
               style={styles.remoteVideo}

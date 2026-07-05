@@ -45,6 +45,13 @@ export interface CallNotificationModuleInterface {
   stopBackgroundService(): Promise<boolean>;
 
   /**
+   * Request exemption from battery optimization / Doze (Android only).
+   * Resolves true if the app is (or becomes) exempt; shows the system dialog at
+   * most once. No-op on iOS.
+   */
+  requestBatteryOptimizationExemption?(): Promise<boolean>;
+
+  /**
    * Request notification permission (Android 13+)
    */
   requestNotificationPermission(): Promise<'granted' | 'requested' | 'no_activity' | 'not_required'>;

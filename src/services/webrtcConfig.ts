@@ -41,29 +41,40 @@ export const getIceServers = async () => {
   };
 };
 
-// Media constraints for getUserMedia
-// Always request both audio and video — camera starts disabled at the track level
-export const getMediaConstraints = () => ({
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-    sampleRate: { ideal: 48000 },
-    channelCount: { ideal: 1 },
-  },
-  video: {
-    facingMode: 'user',
-    width: 1280,
-    height: 720,
-    frameRate: 30,
-  },
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  sampleRate: { ideal: 48000 },
+  channelCount: { ideal: 1 },
+};
+
+const VIDEO_CONSTRAINTS = {
+  facingMode: 'user',
+  width: 1280,
+  height: 720,
+  frameRate: 30,
+};
+
+// Media constraints for getUserMedia. `withVideo` lets callers fall back to audio-only when the
+// camera is unavailable (denied / in use by another app) so a voice call still succeeds.
+export const getMediaConstraints = (withVideo: boolean = true) => ({
+  audio: AUDIO_CONSTRAINTS,
+  video: withVideo ? VIDEO_CONSTRAINTS : false,
 });
 
-// InCallManager options
-// Always use 'audio' media type to default to earpiece (phone mode)
-// Even for video calls - the unified UI supports video but starts with earpiece
+// Audio-only constraints (no camera acquisition at all).
+export const getAudioOnlyConstraints = () => ({
+  audio: AUDIO_CONSTRAINTS,
+  video: false,
+});
+
+// InCallManager options. Video calls route to the loudspeaker and disable the proximity sensor
+// (media:'video'); audio calls default to the earpiece (media:'audio'). Using 'audio' for video
+// calls previously routed remote audio to the near-inaudible earpiece and blanked the screen when
+// the proximity sensor was covered.
 export const getInCallManagerOptions = (callType: CallType) => ({
-  media: 'audio' as 'audio' | 'video',
+  media: (callType === 'video' ? 'video' : 'audio') as 'audio' | 'video',
   auto: true,
   ringback: '',
 });

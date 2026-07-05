@@ -40,6 +40,26 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    // Tear down any in-progress call FIRST. The call UI is only mounted while a session exists,
+    // so clearing the token unmounts it mid-call — without this the RTCPeerConnection, captured
+    // mic/camera, and audio session keep running with no hang-up UI, and the store stays 'active'
+    // so every future incoming call is busy-rejected after re-login.
+    try {
+      const { useCallStore } = await import('./callStore');
+      const callState = useCallStore.getState();
+      if (callState.status !== 'idle') {
+        console.log('[Auth] Ending in-progress call before logout, status:', callState.status);
+        const { webrtcService } = await import('../services/webrtcService');
+        if (callState.isGroupCall) {
+          webrtcService.endGroupCall();
+        } else {
+          webrtcService.endCall();
+        }
+      }
+    } catch (error) {
+      console.error('[Auth] Error tearing down call on logout:', error);
+    }
+
     await AsyncStorage.removeItem('vcomm_session_token');
     set({ user: null, sessionToken: null });
 
