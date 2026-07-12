@@ -51,8 +51,10 @@ export class OneOnOneCallService {
     try {
       stream?.getTracks().forEach((track: MediaStreamTrack) => {
         track.stop();
-        try { (track as any).release?.(); } catch (e) { /* no-op */ }
       });
+      // ONLY release the stream, which will natively clean up the capturer and its tracks.
+      // Do not call track.release() individually to avoid double-dispose.
+      try { (stream as any).release?.(); } catch (e) { /* no-op */ }
     } catch (e) { /* no-op */ }
     if (this.peerConnection) {
       try { this.peerConnection.close(); } catch (e) { /* no-op */ }
@@ -767,49 +769,50 @@ export class OneOnOneCallService {
     InCallManager.stop();
     console.log('[WebRTC 1:1] Audio session stopped');
 
-    // Remove tracks from peer connection first
-    if (this.peerConnection) {
-      console.log('[WebRTC 1:1] Removing all tracks from peer connection');
-      try {
-        const senders = this.peerConnection.getSenders();
-        senders.forEach((sender: any) => {
-          if (sender.track) {
-            const trackKind = sender.track.kind;
-            sender.track.stop();
-            this.peerConnection?.removeTrack(sender);
-            console.log('[WebRTC 1:1] Removed and stopped track from peer connection:', trackKind);
-          }
-        });
-      } catch (error) {
-        console.log('[WebRTC 1:1] Error removing tracks (may be already removed):', error);
-      }
-    }
-
-    // Stop AND release all local tracks. In react-native-webrtc, track.stop() only marks the track
-    // ended; native disposal (camera capturer + its SurfaceTextureHelper thread, audio source)
-    // happens via release(). Without this every call leaks a capturer + thread + native tracks.
+    // STEP 1: Stop local tracks BEFORE closing the peer connection.
+    // Calling peerConnection.close() first would dispose the native track objects,
+    // making any subsequent stop() on them throw IllegalStateException.
     const localStream = useCallStore.getState().localStream;
     if (localStream) {
       localStream.getTracks().forEach((track: MediaStreamTrack) => {
-        track.stop();
-        try { (track as any).release?.(); } catch (e) { /* older RN-WebRTC without release() */ }
-        console.log('[WebRTC 1:1] Stopped+released local track:', track.kind);
+        try {
+          // Guard: only stop if not already ended to avoid redundant native calls
+          if (track.readyState !== 'ended') {
+            track.stop();
+          }
+        } catch (e) {
+          console.log('[WebRTC 1:1] Error stopping local track (already stopped?):', e);
+        }
+        console.log('[WebRTC 1:1] Stopped local track:', track.kind);
       });
+      // release() disposes the native camera capturer + SurfaceTextureHelper thread natively
+      // NOTE: We MUST NOT call track.release() individually if we are calling stream.release(), 
+      // as stream.release() automatically attempts to release all its native tracks, causing 
+      // a double-dispose crash if they are already released.
       try { (localStream as any).release?.(); } catch (e) { /* no-op */ }
     }
 
-    // Stop all remote tracks
+    // STEP 2: Stop remote tracks (these are managed by the PC but we mark them ended).
+    // No release() needed here — remote tracks are not local capturers.
     const remoteStream = useCallStore.getState().remoteStream;
     if (remoteStream) {
       remoteStream.getTracks().forEach((track: MediaStreamTrack) => {
-        track.stop();
+        try {
+          if (track.readyState !== 'ended') {
+            track.stop();
+          }
+        } catch (e) { /* no-op */ }
         console.log('[WebRTC 1:1] Stopped remote track:', track.kind);
       });
     }
 
-    // Close peer connection
+    // STEP 3: NOW close the peer connection (after all tracks are safely stopped/released).
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.close();
+      } catch (e) {
+        console.log('[WebRTC 1:1] Error closing peer connection:', e);
+      }
       this.peerConnection = null;
       console.log('[WebRTC 1:1] Peer connection closed and cleared');
     }
@@ -838,7 +841,7 @@ export class OneOnOneCallService {
       }
     }
 
-    // Update call store
+    // Update call store — this ONLY resets Zustand state, no track operations inside
     useCallStore.getState().endCall();
 
     // Reset initialization flag

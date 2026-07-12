@@ -35,6 +35,7 @@ import { ImageViewerModal } from './ImageViewerModal';
 import { VoiceNoteRecorder } from './VoiceNoteRecorder';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import RNFetchBlob from 'rn-fetch-blob';
+import { Skeleton } from './ui/Skeleton';
 
 interface ChatRoomProps {
   conversationId: number;
@@ -1966,9 +1967,32 @@ export function ChatRoom({
 
       {/* Messages */}
       {isLoading ? (
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color="#a6c455" />
-          <Text style={styles.loadingText}>LOADING SECURE CHANNEL...</Text>
+        <View style={styles.messagesContent}>
+          {[1, 2, 3, 4, 5].map((key) => {
+            const isMe = key % 2 === 0;
+            return (
+              <View
+                key={key}
+                style={[
+                  styles.messageRow,
+                  isMe ? styles.ownMessageRow : styles.otherMessageRow,
+                  { opacity: 0.7 }
+                ]}>
+                <View
+                  style={[
+                    styles.messageBubble,
+                    isMe ? styles.ownMessage : styles.otherMessage,
+                    { minWidth: 150, minHeight: 60, padding: 12, backgroundColor: '#2a2a2a', borderWidth: 0 }
+                  ]}>
+                  <Skeleton width="80%" height={12} style={{ marginBottom: 8 }} />
+                  <Skeleton width="50%" height={12} style={{ marginBottom: 12 }} />
+                  <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+                    <Skeleton width={40} height={10} />
+                  </View>
+                </View>
+              </View>
+            );
+          })}
         </View>
       ) : (
         <FlatList

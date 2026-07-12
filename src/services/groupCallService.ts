@@ -869,29 +869,42 @@ export class GroupCallService {
 
     this.groupIceRestartAttempts.clear();
 
-    // Stop AND release the local stream so the native camera capturer + its thread are disposed
-    // (stop() alone only marks tracks ended in react-native-webrtc).
+    // STEP 1: Stop local stream BEFORE closing peer connections.
     const localStream = useCallStore.getState().localStream;
     if (localStream) {
       localStream.getTracks().forEach((track: MediaStreamTrack) => {
-        track.stop();
-        try { (track as any).release?.(); } catch (e) { /* no-op */ }
+        try {
+          if (track.readyState !== 'ended') {
+            track.stop();
+          }
+        } catch (e) { /* no-op */ }
       });
+      // ONLY release the stream, which will natively clean up the capturer and its tracks.
+      // Do not call track.release() individually to avoid double-dispose.
       try { (localStream as any).release?.(); } catch (e) { /* no-op */ }
     }
 
-    // Stop all participant streams
+    // STEP 2: Stop all participant (remote) streams.
+    // No release() needed — these are remote tracks, not local capturers.
     this.participantStreams.forEach((stream, participantUserId) => {
       console.log('[WebRTC Group] Stopping stream for participant:', participantUserId);
       stream.getTracks().forEach((track: MediaStreamTrack) => {
-        track.stop();
+        try {
+          if (track.readyState !== 'ended') {
+            track.stop();
+          }
+        } catch (e) { /* no-op */ }
       });
     });
     this.participantStreams.clear();
 
-    // Close all peer connections
+    // STEP 3: NOW close all peer connections (after all tracks are safely stopped).
     this.groupPeerConnections.forEach((peerConnection, participantUserId) => {
-      peerConnection.close();
+      try {
+        peerConnection.close();
+      } catch (e) {
+        console.log('[WebRTC Group] Error closing PC for participant', participantUserId, ':', e);
+      }
     });
     this.groupPeerConnections.clear();
     this.groupPendingIceCandidates.clear();
@@ -909,7 +922,7 @@ export class GroupCallService {
       });
     }
 
-    // Update call store
+    // Update call store — this ONLY resets Zustand state, no track operations inside
     useCallStore.getState().endCall();
   }
 }

@@ -202,21 +202,16 @@ export const useCallStore: any = create<CallState>((set) => ({
   setRemoteVideoEnabled: (enabled: boolean) => set({ isRemoteVideoEnabled: enabled }),
 
   endCall: () =>
-    set((state) => {
-      // Clean up streams
-      state.localStream?.getTracks().forEach((track) => track.stop());
-      state.remoteStream?.getTracks().forEach((track) => track.stop());
-
-      // Clean up group call participant streams
-      if (state.isGroupCall) {
-        state.participants.forEach((participant) => {
-          participant.stream?.getTracks().forEach((track) => track.stop());
-        });
-      }
-
+    set(() => {
+      // NOTE: Do NOT call track.stop() here.
+      // The service layer (oneOnOneCallService / groupCallService) is responsible for stopping
+      // and releasing all tracks BEFORE calling this action. Calling stop() here too causes a
+      // double-dispose of native MediaStreamTrack objects, which results in:
+      //   java.lang.IllegalStateException: MediaStreamTrack has been disposed.
+      // This store action only resets the Zustand state references to null.
       return {
         ...initialState,
-        status: 'idle', // Changed from 'ended' to 'idle' to allow new calls
+        status: 'idle',
       };
     }),
 

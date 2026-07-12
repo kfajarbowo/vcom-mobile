@@ -13,6 +13,7 @@ import {useAuthStore} from '../store/authStore';
 import {apiRequest} from '../services/apiClient';
 import {websocketService} from '../services/websocket';
 import {NewConversation} from './NewConversation';
+import {Skeleton} from './ui/Skeleton';
 
 interface ChatListProps {
   onSelectChat: (conversationId: number, isGroup: boolean) => void;
@@ -275,9 +276,24 @@ export function ChatList({onSelectChat}: ChatListProps) {
 
   if (isLoading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#a6c455" />
-        <Text style={styles.loadingText}>LOADING COMMUNICATIONS...</Text>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>COMMUNICATIONS</Text>
+          <View style={styles.headerDivider} />
+        </View>
+        <View style={styles.listContent}>
+          {[1, 2, 3, 4, 5, 6].map((key) => (
+            <View key={key} style={styles.chatItem}>
+              <View style={styles.avatarContainer}>
+                <Skeleton width={52} height={52} borderRadius={4} />
+              </View>
+              <View style={[styles.chatContent, { justifyContent: 'center' }]}>
+                <Skeleton width="60%" height={16} style={{ marginBottom: 8 }} />
+                <Skeleton width="40%" height={12} />
+              </View>
+            </View>
+          ))}
+        </View>
       </View>
     );
   }
