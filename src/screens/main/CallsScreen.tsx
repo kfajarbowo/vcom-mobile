@@ -42,15 +42,21 @@ export function CallsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
-  const user = useAuthStore((state) => state.user);
+  const user = useAuthStore(state => state.user);
 
   const fetchCallHistory = useCallback(async () => {
-    if (!user) {return;}
+    if (!user) {
+      return;
+    }
 
     try {
       console.log('[CallsScreen] Fetching call history...');
       const data = await apiRequest<CallHistoryItem[]>('/api/call-history');
-      console.log('[CallsScreen] Call history received:', data?.length || 0, 'calls');
+      console.log(
+        '[CallsScreen] Call history received:',
+        data?.length || 0,
+        'calls',
+      );
       setCallHistory(data || []);
     } catch (error) {
       console.error('[CallsScreen] Failed to fetch call history:', error);
@@ -88,7 +94,11 @@ export function CallsScreen() {
     }
 
     return (
-      <MaterialCommunityIcons name={iconName} size={iconSize} color={iconColor} />
+      <MaterialCommunityIcons
+        name={iconName}
+        size={iconSize}
+        color={iconColor}
+      />
     );
   };
 
@@ -124,7 +134,9 @@ export function CallsScreen() {
   };
 
   const formatDuration = (seconds?: number) => {
-    if (!seconds || seconds === 0) {return '';}
+    if (!seconds || seconds === 0) {
+      return '';
+    }
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
@@ -133,7 +145,9 @@ export function CallsScreen() {
   const formatTimestamp = (timestamp: string) => {
     try {
       const date = new Date(timestamp);
-      if (isNaN(date.getTime())) {return 'Invalid time';}
+      if (isNaN(date.getTime())) {
+        return 'Invalid time';
+      }
 
       const now = new Date();
       const diffMs = now.getTime() - date.getTime();
@@ -165,17 +179,31 @@ export function CallsScreen() {
   };
 
   const getStatusText = (status: string, isOutgoing: boolean) => {
-    if (status === 'missed') {return 'Missed call';}
-    if (status === 'accepted') {return isOutgoing ? 'Outgoing' : 'Incoming';}
-    if (status === 'initiated') {return 'Outgoing';}
+    if (status === 'missed') {
+      return 'Missed call';
+    }
+    if (status === 'accepted') {
+      return isOutgoing ? 'Outgoing' : 'Incoming';
+    }
+    if (status === 'initiated') {
+      return 'Outgoing';
+    }
     return status;
   };
 
-  const filteredHistory = callHistory.filter((call) => {
-    if (filter === 'all') {return true;}
-    if (filter === 'audio') {return call.callType === 'audio';}
-    if (filter === 'video') {return call.callType === 'video';}
-    if (filter === 'group') {return call.callType?.startsWith('group_');}
+  const filteredHistory = callHistory.filter(call => {
+    if (filter === 'all') {
+      return true;
+    }
+    if (filter === 'audio') {
+      return call.callType === 'audio';
+    }
+    if (filter === 'video') {
+      return call.callType === 'video';
+    }
+    if (filter === 'group') {
+      return call.callType?.startsWith('group_');
+    }
     return true;
   });
 
@@ -221,9 +249,10 @@ export function CallsScreen() {
         // Group callIds must carry the 'group_call_' prefix so the server routes hangups etc. as
         // group calls (the server keys group behaviour off this prefix).
         const groupCallId = `group_call_${Date.now()}_${user?.id}`;
-        const participantIds = call.participants
-          ?.map(id => parseInt(id, 10))
-          .filter(id => !isNaN(id) && id !== user?.id) || [];
+        const participantIds =
+          call.participants
+            ?.map(id => parseInt(id, 10))
+            .filter(id => !isNaN(id) && id !== user?.id) || [];
 
         console.log('[CallsScreen] Starting group callback:', {
           groupCallId,
@@ -257,7 +286,9 @@ export function CallsScreen() {
         return;
       }
 
-      const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const callId = `call_${Date.now()}_${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
 
       // 1:1 call callback
       const targetUserId = call.isOutgoing ? call.toUserId : call.fromUserId;
@@ -268,7 +299,7 @@ export function CallsScreen() {
       try {
         const conversations = await apiRequest<any[]>('/api/direct-chats');
         const directConv = conversations?.find((c: any) =>
-          c.members?.some((m: any) => m.userId === targetUserId)
+          c.members?.some((m: any) => m.userId === targetUserId),
         );
         conversationId = directConv?.id;
       } catch (e) {
@@ -300,7 +331,7 @@ export function CallsScreen() {
       Alert.alert(
         'Call Failed',
         error.message || 'Failed to initiate call. Please try again.',
-        [{text: 'OK'}]
+        [{text: 'OK'}],
       );
     }
   };
@@ -323,11 +354,13 @@ export function CallsScreen() {
           )}
         </View>
 
-        {item.callType?.startsWith('group_') && item.participantNames && item.participantNames.length > 0 && (
-          <Text style={styles.participantNames} numberOfLines={1}>
-            {item.participantNames.join(', ')}
-          </Text>
-        )}
+        {item.callType?.startsWith('group_') &&
+          item.participantNames &&
+          item.participantNames.length > 0 && (
+            <Text style={styles.participantNames} numberOfLines={1}>
+              {item.participantNames.join(', ')}
+            </Text>
+          )}
 
         <View style={styles.callDetails}>
           {getCallStatusIcon(item.status, item.isOutgoing)}
@@ -343,7 +376,9 @@ export function CallsScreen() {
                 color="#666"
                 style={styles.durationIcon}
               />
-              <Text style={styles.duration}>{formatDuration(item.duration)}</Text>
+              <Text style={styles.duration}>
+                {formatDuration(item.duration)}
+              </Text>
             </>
           )}
         </View>
@@ -399,24 +434,24 @@ export function CallsScreen() {
 
         {/* Filter Buttons Skeleton */}
         <View style={styles.filterContainer}>
-          {[1, 2, 3, 4].map((key) => (
+          {[1, 2, 3, 4].map(key => (
             <Skeleton key={key} width={70} height={32} borderRadius={6} />
           ))}
         </View>
 
         {/* List Skeleton */}
         <View style={styles.list}>
-          {[1, 2, 3, 4, 5, 6].map((key) => (
+          {[1, 2, 3, 4, 5, 6].map(key => (
             <View key={key} style={styles.callItem}>
-              <View style={[styles.callIconContainer, { borderWidth: 0 }]}>
+              <View style={[styles.callIconContainer, {borderWidth: 0}]}>
                 <Skeleton width={48} height={48} borderRadius={24} />
               </View>
               <View style={styles.callInfo}>
-                <Skeleton width="50%" height={15} style={{ marginBottom: 8 }} />
-                <Skeleton width="35%" height={13} style={{ marginBottom: 6 }} />
+                <Skeleton width="50%" height={15} style={{marginBottom: 8}} />
+                <Skeleton width="35%" height={13} style={{marginBottom: 6}} />
                 <Skeleton width="20%" height={11} />
               </View>
-              <View style={[styles.callbackButton, { borderWidth: 0 }]}>
+              <View style={[styles.callbackButton, {borderWidth: 0}]}>
                 <Skeleton width={44} height={44} borderRadius={22} />
               </View>
             </View>
@@ -446,7 +481,7 @@ export function CallsScreen() {
       <FlatList
         data={filteredHistory}
         renderItem={renderCallItem}
-        keyExtractor={(item) => item.id.toString()}
+        keyExtractor={item => item.id.toString()}
         contentContainerStyle={
           filteredHistory.length === 0 ? styles.emptyList : styles.list
         }
