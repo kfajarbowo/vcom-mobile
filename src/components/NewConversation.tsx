@@ -26,7 +26,7 @@ interface User {
 interface NewConversationProps {
   visible: boolean;
   onClose: () => void;
-  onConversationCreated: (conversationId: number, isGroup: boolean) => void;
+  onConversationCreated: (conversationId: number, isGroup: boolean, displayName?: string) => void;
 }
 
 export function NewConversation({
@@ -146,7 +146,8 @@ export function NewConversation({
           }),
         });
 
-        onConversationCreated(response.id, false);
+        const directChatPartnerName = selectedUsers[0].callsign || selectedUsers[0].fullName || selectedUsers[0].username;
+        onConversationCreated(response.id, false, directChatPartnerName);
       } else {
 
         console.log("selected users:", selectedUsers)

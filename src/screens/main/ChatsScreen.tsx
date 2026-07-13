@@ -34,7 +34,7 @@ export function ChatsScreen() {
 
   console.log('[ChatsScreen] Render - selectedConversation:', selectedConversation?.id);
 
-  const handleSelectChat = (conversationId: number, isGroup: boolean) => {
+  const handleSelectChat = (conversationId: number, isGroup: boolean, displayName?: string) => {
     const conversation = conversations.find((c) => c.id === conversationId);
     if (conversation) {
       console.log('[ChatsScreen] Selected conversation:', conversation);
@@ -42,7 +42,7 @@ export function ChatsScreen() {
       setSelectedConversation({
         id: conversationId,
         isGroup,
-        name: conversation.name,
+        name: displayName || conversation.name,
         otherUserId: conversation.otherUserId,
       });
     }

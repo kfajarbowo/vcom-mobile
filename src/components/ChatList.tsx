@@ -16,7 +16,7 @@ import {NewConversation} from './NewConversation';
 import {Skeleton} from './ui/Skeleton';
 
 interface ChatListProps {
-  onSelectChat: (conversationId: number, isGroup: boolean) => void;
+  onSelectChat: (conversationId: number, isGroup: boolean, displayName?: string) => void;
 }
 
 export function ChatList({onSelectChat}: ChatListProps) {
@@ -173,10 +173,11 @@ export function ChatList({onSelectChat}: ChatListProps) {
 
   const handleConversationCreated = (
     conversationId: number,
-    isGroup: boolean
+    isGroup: boolean,
+    displayName?: string
   ) => {
     loadConversations();
-    onSelectChat(conversationId, isGroup);
+    onSelectChat(conversationId, isGroup, displayName);
   };
 
   // Get online status for a conversation (for direct chats, check the other user's status)
@@ -221,7 +222,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
       return (
         <TouchableOpacity
           style={styles.chatItem}
-          onPress={() => onSelectChat(item.id, item.isGroup)}>
+          onPress={() => onSelectChat(item.id, item.isGroup, displayName)}>
           <View style={styles.avatarContainer}>
             <View style={[styles.avatar, item.isGroup ? styles.groupAvatar : styles.directAvatar]}>
               <Text style={styles.avatarText}>

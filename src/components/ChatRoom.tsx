@@ -1880,15 +1880,23 @@ export function ChatRoom({
           onPress={() => setInfoModalVisible(true)}
           activeOpacity={0.7}>
           <View style={[styles.headerAvatar, isGroup ? styles.groupAvatar : styles.directAvatar]}>
-            <Text style={styles.headerAvatarText}>
-              {displayName.substring(0, 2).toUpperCase()}
-            </Text>
+            {displayName.startsWith('Direct Chat') ? (
+              <Skeleton width={40} height={40} borderRadius={4} />
+            ) : (
+              <Text style={styles.headerAvatarText}>
+                {displayName.substring(0, 2).toUpperCase()}
+              </Text>
+            )}
           </View>
 
           <View style={styles.headerInfo}>
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {displayName.toUpperCase()}
-            </Text>
+            {displayName.startsWith('Direct Chat') ? (
+              <Skeleton width={120} height={18} style={{ marginBottom: 4 }} />
+            ) : (
+              <Text style={styles.headerTitle} numberOfLines={1}>
+                {displayName.toUpperCase()}
+              </Text>
+            )}
             <View style={styles.headerStatus}>
               <View style={[styles.statusDot, isGroup ? styles.statusDotGroup : (otherUserOnline ? styles.statusDotOnline : styles.statusDotOffline)]} />
               <Text style={[styles.headerSubtitle, !isGroup && (otherUserOnline ? styles.statusTextOnline : styles.statusTextOffline)]}>
