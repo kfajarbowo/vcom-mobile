@@ -4,7 +4,7 @@ import { fetchCustomSites, checkAllSitesStatus, Site } from '../../services/site
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Input, Button } from '../../components/ui';
 import { authService } from '../../services/authService';
@@ -42,8 +42,8 @@ export function LoginScreen({ navigation }: Props) {
       try {
         const host = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST);
         const port = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT);
-        if (host) setServerHost(host);
-        if (port) setServerPort(port);
+        if (host) {setServerHost(host);}
+        if (port) {setServerPort(port);}
       } catch (error) {
         console.error('[Login] Failed to load server settings:', error);
       }
@@ -64,7 +64,7 @@ export function LoginScreen({ navigation }: Props) {
 
         // Check connectivity for all sites in parallel
         setSiteStatuses(Object.fromEntries(sites.map(s => [s.ip, null])));
-        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort) || 5000);
+        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort, 10) || 5000);
         setSiteStatuses(statuses);
 
         // Auto-deselect if the currently selected site is offline
@@ -77,6 +77,7 @@ export function LoginScreen({ navigation }: Props) {
       };
       loadSites();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showServerSettings, customSites.length]);
 
   const handleSaveServerSettings = async () => {
@@ -192,6 +193,7 @@ export function LoginScreen({ navigation }: Props) {
   };
 
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const startBackgroundService = async (userId: number) => {
     try {
       console.log('[Login] Configuring background service...');
@@ -371,7 +373,7 @@ export function LoginScreen({ navigation }: Props) {
                 <TextInput
                   style={[
                     styles.portInput,
-                    !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' }
+                    !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' },
                   ]}
                   placeholder="5000"
                   placeholderTextColor="#555"

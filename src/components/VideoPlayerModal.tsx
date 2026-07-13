@@ -45,7 +45,7 @@ export function VideoPlayerModal({
     setDuration(0);
     setCurrentTime(0);
     setShowControls(true);
-    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    if (controlsTimeoutRef.current) {clearTimeout(controlsTimeoutRef.current);}
   }, []);
 
   const handleClose = () => {
@@ -66,7 +66,7 @@ export function VideoPlayerModal({
     setShowControls(prev => {
       if (!prev) {
         // Show then auto-hide after 3s
-        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+        if (controlsTimeoutRef.current) {clearTimeout(controlsTimeoutRef.current);}
         controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
       }
       return !prev;
@@ -76,7 +76,7 @@ export function VideoPlayerModal({
   const handlePlayPause = () => {
     setPaused(p => !p);
     // Reset auto-hide timer
-    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    if (controlsTimeoutRef.current) {clearTimeout(controlsTimeoutRef.current);}
     controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
   };
 

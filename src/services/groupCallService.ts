@@ -17,7 +17,7 @@ import {
   getAudioOnlyConstraints,
   getInCallManagerOptions,
   AUDIO_HEALTH_CHECK_INTERVAL,
-  STREAM_WAIT_CONFIG
+  STREAM_WAIT_CONFIG,
 } from './webrtcConfig';
 
 /**
@@ -101,7 +101,7 @@ export class GroupCallService {
         id: event.track.id,
         enabled: event.track.enabled,
         muted: event.track.muted,
-        readyState: event.track.readyState
+        readyState: event.track.readyState,
       });
 
       // Handle track mute/unmute events for video
@@ -268,7 +268,7 @@ export class GroupCallService {
         callType: callState.callType,
         status: callState.status,
         isGroupCall: callState.isGroupCall,
-        currentUserId: currentUser?.id
+        currentUserId: currentUser?.id,
       });
 
       // Start audio session. Video calls use the loudspeaker; audio calls the earpiece.
@@ -804,7 +804,7 @@ export class GroupCallService {
   // restart budget is exhausted, drop the participant tile so it doesn't sit frozen forever.
   private async attemptGroupIceRecovery(participantUserId: number): Promise<void> {
     const currentUserId = useAuthStore.getState().user?.id;
-    if (currentUserId == null) return;
+    if (currentUserId == null) {return;}
 
     const attempts = this.groupIceRestartAttempts.get(participantUserId) || 0;
     if (attempts >= GroupCallService.MAX_GROUP_ICE_RESTARTS) {

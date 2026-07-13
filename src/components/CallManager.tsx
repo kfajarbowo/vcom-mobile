@@ -1,5 +1,4 @@
 import { useEffect } from 'react';
-import { AppState } from 'react-native';
 import { websocketService, WebSocketMessage } from '../services/websocket';
 import { webrtcService } from '../services/webrtcService';
 import { callNotificationService } from '../services/callNotificationService';
@@ -13,7 +12,7 @@ import { CallActionEvent } from '../types/native';
  * Listens to WebSocket messages and coordinates with WebRTC service
  */
 export function CallManager() {
-  const { user } = useAuthStore();
+  useAuthStore();
   const toast = useToast();
 
   // Handle call action events from native notification (accept/reject from lock screen)
@@ -115,7 +114,8 @@ export function CallManager() {
     return () => {
       removeCallActionListener();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast]);
 
   useEffect(() => {
     console.log('[CallManager] Setting up WebRTC signaling handlers');
@@ -152,7 +152,7 @@ export function CallManager() {
           'group_call_ended', 'group_call_user_left', 'group_call_rejected',
           'group_call_no_participants', 'group_participant_refresh',
         ]);
-        if (!callMessageTypes.has(message.type)) return;
+        if (!callMessageTypes.has(message.type)) {return;}
 
         // Get fresh state on each message
         const callStore = useCallStore.getState();
@@ -163,7 +163,7 @@ export function CallManager() {
           case 'incoming_call': {
             console.log('[CallManager] Incoming 1-on-1 call received');
             const payload = message.payload || message;
-            const { callId, callType, fromUserId, fromUserName, conversationId } = payload as any;
+            const { callId, callType, fromUserId, fromUserName } = payload as any;
 
             console.log('[CallManager] Incoming call details:', {
               callId,
@@ -171,7 +171,7 @@ export function CallManager() {
               fromUserId,
               fromUserName,
               conversationId,
-              currentStatus: callStore.status
+              currentStatus: callStore.status,
             });
 
             // Ignore calls from ourselves
@@ -236,8 +236,8 @@ export function CallManager() {
                 payload: {
                   callId,
                   toUserId: fromUserId,
-                  reason: 'busy'
-                }
+                  reason: 'busy',
+                },
               });
             }
             break;
@@ -252,7 +252,6 @@ export function CallManager() {
             const callId = payload.callId;
             const offer = payload.offer;
             const callType = payload.callType;
-            const conversationId = payload.conversationId;
 
             console.log('[CallManager] Offer SDP received for callId:', callId);
             console.log('[CallManager] Current call status:', callStore.status);
@@ -264,7 +263,7 @@ export function CallManager() {
             if (!callId || !offer) {
               console.error('[CallManager] ❌ Invalid offer - missing callId or offer:', {
                 hasCallId: !!callId,
-                hasOffer: !!offer
+                hasOffer: !!offer,
               });
               break;
             }
@@ -464,7 +463,7 @@ export function CallManager() {
           case 'initiate_call': {
             // Only handle group call invitations here; 1:1 calls are handled by incoming_call
             const payload = message.payload || message;
-            const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, groupName, participants } = payload as any;
+            const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, participants } = payload as any;
 
             console.log('[CallManager] Initiate call received:', {
               callId,
@@ -474,7 +473,7 @@ export function CallManager() {
               participantsCount: participants?.length,
               fromUserId,
               fromUserName,
-              conversationId
+              conversationId,
             });
 
             // Ignore initiate_call messages from ourselves (echoed back from server)
@@ -495,8 +494,8 @@ export function CallManager() {
                 groupName: groupName || 'Group Call',
                 participants: participants.map((p: any) => ({
                   userId: p.userId || p,
-                  userName: p.callsign || p.userName || `User ${p.userId || p}`
-                }))
+                  userName: p.callsign || p.userName || `User ${p.userId || p}`,
+                })),
               });
             } else {
               // Ignore 1:1 initiate_call - handled by incoming_call to avoid duplicates
@@ -517,7 +516,7 @@ export function CallManager() {
               callType,
               fromUserId,
               fromUserName,
-              currentStatus: callStore.status
+              currentStatus: callStore.status,
             });
 
             // Only handle if not already in a call
@@ -533,12 +532,12 @@ export function CallManager() {
                 groupName: groupName || 'Group Call',
                 participants: [{
                   userId: fromUserId,
-                  userName: fromUserName || `User ${fromUserId}`
-                }]
+                  userName: fromUserName || `User ${fromUserId}`,
+                }],
               });
               console.log('[CallManager] ✅ Group call set to ringing status, participants:', [{
                 userId: fromUserId,
-                userName: fromUserName || `User ${fromUserId}`
+                userName: fromUserName || `User ${fromUserId}`,
               }]);
 
               // Always show native notification for incoming calls to mimic background behavior as requested
@@ -577,8 +576,8 @@ export function CallManager() {
                     callId,
                     groupId,
                     fromUserId: currentUser?.id,
-                    userName: currentUser?.callsign || currentUser?.fullName
-                  }
+                    userName: currentUser?.callsign || currentUser?.fullName,
+                  },
                 });
               }
             }
@@ -588,7 +587,7 @@ export function CallManager() {
           case 'join_group_call': {
             console.log('[CallManager] Join group call message received');
             const payload = message.payload || message;
-            const { callId, participants, groupName } = payload as any;
+            const { callId, participants } = payload as any;
 
             // Ignore updates that aren't for our current group call (a different group's call could
             // otherwise inject phantom participants into this one).
@@ -615,8 +614,7 @@ export function CallManager() {
             // Server responds with the actual callId (may differ from what mobile sent for rejoin)
             console.log('[CallManager] Group call initiated response received');
             const payload = message.payload || message;
-            const { callId: serverCallId, originalCallId, isRejoin } = payload as any;
-            const callStore = useCallStore.getState();
+            const { callId: serverCallId, isRejoin } = payload as any;
 
             // If this is a rejoin and the server gave us a different callId, update our local state
             if (isRejoin && serverCallId && callStore.callId !== serverCallId) {
@@ -643,7 +641,7 @@ export function CallManager() {
               callId,
               participantsCount: Array.isArray(participants) ? participants.length : 0,
               hasParticipantData: !!participantData,
-              newParticipant
+              newParticipant,
             });
 
             // Build a name lookup from participantData (server-resolved names)
@@ -722,7 +720,7 @@ export function CallManager() {
               participantsCount: participants?.length,
               participants,
               currentUserId: currentUser?.id,
-              currentCallStatus: callStore.status
+              currentCallStatus: callStore.status,
             });
 
             // Create offers to all other participants (excluding ourselves)
@@ -916,7 +914,7 @@ export function CallManager() {
       console.log('[CallManager] Cleaning up WebRTC signaling handlers');
       removeHandler();
     };
-  }, []); // Empty deps - handlers access state via getState(), don't need to re-register
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // This component doesn't render anything
   return null;

@@ -1,5 +1,5 @@
 import {PermissionsAndroid, Platform, Linking} from 'react-native';
-import {openSettings, PERMISSIONS, request, check, RESULTS} from 'react-native-permissions';
+import {openSettings, PERMISSIONS, request, RESULTS} from 'react-native-permissions';
 
 export async function requestCameraAndMicrophonePermissions(): Promise<boolean> {
   if (Platform.OS === 'android') {

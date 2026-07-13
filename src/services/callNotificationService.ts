@@ -90,7 +90,7 @@ class CallNotificationService {
    * Setup event listeners for native module events
    */
   private setupEventListeners(): void {
-    if (!this.eventEmitter) return;
+    if (!this.eventEmitter) {return;}
 
     // Listen for call action events (accept/reject from notification)
     this.callActionSubscription = this.eventEmitter.addListener(
@@ -128,7 +128,7 @@ class CallNotificationService {
    */
   async requestPermission(): Promise<boolean> {
     try {
-      if (!CallNotificationNative) return false;
+      if (!CallNotificationNative) {return false;}
 
       const result = await CallNotificationNative.requestNotificationPermission();
       console.log('[CallNotificationService] Permission result:', result);
@@ -144,7 +144,7 @@ class CallNotificationService {
    */
   async checkPermission(): Promise<boolean> {
     try {
-      if (!CallNotificationNative) return false;
+      if (!CallNotificationNative) {return false;}
       return await CallNotificationNative.checkNotificationPermission();
     } catch (error) {
       console.error('[CallNotificationService] Check permission error:', error);
@@ -297,7 +297,7 @@ class CallNotificationService {
   private async startBackgroundServiceIfConfigured(): Promise<void> {
     try {
       const enabled = await AsyncStorage.getItem(SERVICE_ENABLED_KEY);
-      if (enabled !== 'true') return;
+      if (enabled !== 'true') {return;}
 
       const url = await AsyncStorage.getItem(SERVICE_URL_KEY);
       const tokenOrUserId = await AsyncStorage.getItem(SERVICE_TOKEN_KEY);

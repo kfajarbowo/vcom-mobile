@@ -218,7 +218,7 @@ export const useCallStore: any = create<CallState>((set) => ({
   reset: () => set(initialState),
 
   // Group call actions
-  startGroupCall: ({ callId, callType, participantIds, conversationId, groupName }) =>
+  startGroupCall: ({ callId, callType, participantIds: _participantIds, conversationId, groupName }) =>
     set({
       callId,
       callType,
@@ -233,7 +233,7 @@ export const useCallStore: any = create<CallState>((set) => ({
     }),
 
   receiveGroupCall: ({ callId, callType, callerUserId, conversationId, groupName, participants }) =>
-    set((state) => {
+    set((_state) => {
       const participantMap = new Map<number, Participant>();
       participants.forEach(({ userId, userName }) => {
         participantMap.set(userId, {

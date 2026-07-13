@@ -3,7 +3,7 @@ import { View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, StyleShe
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Button, Input } from '../components/ui';
 import { useLicenseStore } from '../store/licenseStore';
-import { getDeviceHardwareId, formatHardwareId, setLicenseServer } from '../services/licenseService';
+import { getDeviceHardwareId, setLicenseServer } from '../services/licenseService';
 import { STORAGE_KEYS } from '../services/apiClient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchCustomSites, checkAllSitesStatus, Site } from '../services/siteService';
@@ -47,8 +47,8 @@ export function LicenseActivationScreen() {
       try {
         const host = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_HOST);
         const port = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_PORT);
-        if (host) setServerHost(host);
-        if (port) setServerPort(port);
+        if (host) {setServerHost(host);}
+        if (port) {setServerPort(port);}
       } catch (error) {
         console.error('[License] Failed to load server settings:', error);
       }
@@ -69,7 +69,7 @@ export function LicenseActivationScreen() {
 
         // Check connectivity for all sites (license server uses port 3001)
         setSiteStatuses(Object.fromEntries(sites.map(s => [s.ip, null])));
-        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort) || 3001);
+        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort, 10) || 3001);
         setSiteStatuses(statuses);
 
         // Auto-deselect if the currently selected site is offline
@@ -82,6 +82,7 @@ export function LicenseActivationScreen() {
       };
       loadSites();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showServerSettings, customSites.length]);
 
   const handleCopyHardwareId = () => {
@@ -136,7 +137,7 @@ export function LicenseActivationScreen() {
       setStatusMessage({
         type: 'error',
         title: 'Connection Error',
-        message: `Cannot connect to license server`,
+        message: 'Cannot connect to license server',
       });
     } finally {
       setIsChecking(false);
@@ -277,7 +278,7 @@ export function LicenseActivationScreen() {
                     onPress={() => setModalVisible(true)}
                   >
                     <Text style={styles.dropdownTriggerText}>
-                      {customSites.find(s => s.ip === serverHost)?.label || "Select Site"}
+                      {customSites.find(s => s.ip === serverHost)?.label || 'Select Site'}
                     </Text>
                     <Text style={{ color: '#999' }}>
                       {isLoadingSites ? <ActivityIndicator size="small" color="#a6c455" /> : '▼'}
@@ -297,7 +298,7 @@ export function LicenseActivationScreen() {
                           ListEmptyComponent={
                             <View style={{ padding: 20, alignItems: 'center' }}>
                               <Text style={{ color: '#888', marginBottom: 12 }}>No sites available</Text>
-                              <TouchableOpacity 
+                              <TouchableOpacity
                                 onPress={async () => {
                                   setIsLoadingSites(true);
                                   const sites = await fetchCustomSites('blm');
@@ -339,7 +340,7 @@ export function LicenseActivationScreen() {
                                   ]} />
                                   <Text style={[
                                     styles.quickSelectSiteButtonText,
-                                    serverHost === item.ip && styles.quickSelectButtonTextActive
+                                    serverHost === item.ip && styles.quickSelectButtonTextActive,
                                   ]}>
                                     {item.label}
                                   </Text>
@@ -410,7 +411,7 @@ export function LicenseActivationScreen() {
                 <TextInput
                   style={[
                     styles.portInput,
-                    !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' }
+                    !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' },
                   ]}
                   placeholder="3001"
                   placeholderTextColor="#555"
@@ -868,7 +869,7 @@ const styles = StyleSheet.create({
     color: '#999',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
-    marginTop: 8
+    marginTop: 8,
   },
   statusBox: {
     backgroundColor: '#1a1a1a',

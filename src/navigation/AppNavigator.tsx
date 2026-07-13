@@ -24,11 +24,13 @@ export function AppNavigator() {
   // Initialize license store on mount (must happen before auth)
   useEffect(() => {
     initializeLicense();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Initialize auth store on mount
   useEffect(() => {
     initialize();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Ensure the native background WebSocket foreground service is running.
@@ -38,7 +40,7 @@ export function AppNavigator() {
   // idempotent on the native side: if the service is already connected with the
   // same credentials it keeps the existing socket instead of reconnecting.
   const ensureBackgroundService = React.useCallback(async () => {
-    if (!user) return;
+    if (!user) {return;}
     try {
       const baseUrl = await getApiBaseUrl();
       const wsUrl = baseUrl.replace('http', 'ws') + '/ws';

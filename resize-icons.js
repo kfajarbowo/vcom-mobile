@@ -8,7 +8,7 @@ const iconSizes = {
   'hdpi': 72,
   'xhdpi': 96,
   'xxhdpi': 144,
-  'xxxhdpi': 192
+  'xxxhdpi': 192,
 };
 
 const resDir = path.join(__dirname, 'android', 'app', 'src', 'main', 'res');
@@ -56,7 +56,7 @@ async function resizeIcons() {
         .toFile(iconPath + '.tmp');
 
       fs.renameSync(iconPath + '.tmp', iconPath);
-      console.log(`  ✓ ic_launcher.png resized`);
+      console.log('  ✓ ic_launcher.png resized');
     }
 
     if (fs.existsSync(roundIconPath)) {
@@ -66,7 +66,7 @@ async function resizeIcons() {
         .toFile(roundIconPath + '.tmp');
 
       fs.renameSync(roundIconPath + '.tmp', roundIconPath);
-      console.log(`  ✓ ic_launcher_round.png resized`);
+      console.log('  ✓ ic_launcher_round.png resized');
     }
   }
 

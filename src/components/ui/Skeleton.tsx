@@ -3,8 +3,8 @@ import { Animated, StyleSheet, ViewStyle, StyleProp } from 'react-native';
 
 interface SkeletonProps {
   style?: StyleProp<ViewStyle>;
-  width?: number | string;
-  height?: number | string;
+  width?: number | `${number}%`;
+  height?: number | `${number}%`;
   borderRadius?: number;
 }
 

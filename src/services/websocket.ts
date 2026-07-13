@@ -139,7 +139,7 @@ class WebSocketService {
         }
       };
 
-      this.ws.onerror = (error: any) => {
+      this.ws.onerror = (_error: any) => {
         // Reduce noise - only log once
         if (this.reconnectAttempts === 0) {
           console.warn('[WebSocket] ⚠️ Connection failed - app will work without real-time updates');
@@ -295,7 +295,7 @@ class WebSocketService {
             senderId: messageData.senderId,
             currentUserId,
             isOwnMessage,
-            isViewingConversation
+            isViewingConversation,
           });
 
           // Check if conversation exists in the store
@@ -339,7 +339,7 @@ class WebSocketService {
             console.log('[WebSocket] Updating conversation unread count:', {
               current: currentUnreadCount,
               new: newUnreadCount,
-              shouldIncrement: shouldIncrementUnread
+              shouldIncrement: shouldIncrementUnread,
             });
 
             chatStore.updateConversation(conversationId, {

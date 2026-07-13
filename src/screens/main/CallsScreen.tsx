@@ -6,7 +6,6 @@ import {
   FlatList,
   TouchableOpacity,
   RefreshControl,
-  ActivityIndicator,
   Alert,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -15,6 +14,7 @@ import {useAuthStore} from '../../store/authStore';
 import {useCallStore} from '../../store/callStore';
 import {webrtcService} from '../../services/webrtcService';
 import {websocketService} from '../../services/websocket';
+import {Skeleton} from '../../components/ui/Skeleton';
 
 interface CallHistoryItem {
   id: number;
@@ -45,7 +45,7 @@ export function CallsScreen() {
   const user = useAuthStore((state) => state.user);
 
   const fetchCallHistory = useCallback(async () => {
-    if (!user) return;
+    if (!user) {return;}
 
     try {
       console.log('[CallsScreen] Fetching call history...');
@@ -124,7 +124,7 @@ export function CallsScreen() {
   };
 
   const formatDuration = (seconds?: number) => {
-    if (!seconds || seconds === 0) return '';
+    if (!seconds || seconds === 0) {return '';}
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
@@ -133,7 +133,7 @@ export function CallsScreen() {
   const formatTimestamp = (timestamp: string) => {
     try {
       const date = new Date(timestamp);
-      if (isNaN(date.getTime())) return 'Invalid time';
+      if (isNaN(date.getTime())) {return 'Invalid time';}
 
       const now = new Date();
       const diffMs = now.getTime() - date.getTime();
@@ -165,17 +165,17 @@ export function CallsScreen() {
   };
 
   const getStatusText = (status: string, isOutgoing: boolean) => {
-    if (status === 'missed') return 'Missed call';
-    if (status === 'accepted') return isOutgoing ? 'Outgoing' : 'Incoming';
-    if (status === 'initiated') return 'Outgoing';
+    if (status === 'missed') {return 'Missed call';}
+    if (status === 'accepted') {return isOutgoing ? 'Outgoing' : 'Incoming';}
+    if (status === 'initiated') {return 'Outgoing';}
     return status;
   };
 
   const filteredHistory = callHistory.filter((call) => {
-    if (filter === 'all') return true;
-    if (filter === 'audio') return call.callType === 'audio';
-    if (filter === 'video') return call.callType === 'video';
-    if (filter === 'group') return call.callType?.startsWith('group_');
+    if (filter === 'all') {return true;}
+    if (filter === 'audio') {return call.callType === 'audio';}
+    if (filter === 'video') {return call.callType === 'video';}
+    if (filter === 'group') {return call.callType?.startsWith('group_');}
     return true;
   });
 
@@ -222,7 +222,7 @@ export function CallsScreen() {
         // group calls (the server keys group behaviour off this prefix).
         const groupCallId = `group_call_${Date.now()}_${user?.id}`;
         const participantIds = call.participants
-          ?.map(id => parseInt(id))
+          ?.map(id => parseInt(id, 10))
           .filter(id => !isNaN(id) && id !== user?.id) || [];
 
         console.log('[CallsScreen] Starting group callback:', {
@@ -396,9 +396,31 @@ export function CallsScreen() {
           <Text style={styles.headerTitle}>CALL LOGS</Text>
           <View style={styles.headerDivider} />
         </View>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#a6c455" />
-          <Text style={styles.loadingText}>LOADING CALL HISTORY...</Text>
+
+        {/* Filter Buttons Skeleton */}
+        <View style={styles.filterContainer}>
+          {[1, 2, 3, 4].map((key) => (
+            <Skeleton key={key} width={70} height={32} borderRadius={6} />
+          ))}
+        </View>
+
+        {/* List Skeleton */}
+        <View style={styles.list}>
+          {[1, 2, 3, 4, 5, 6].map((key) => (
+            <View key={key} style={styles.callItem}>
+              <View style={[styles.callIconContainer, { borderWidth: 0 }]}>
+                <Skeleton width={48} height={48} borderRadius={24} />
+              </View>
+              <View style={styles.callInfo}>
+                <Skeleton width="50%" height={15} style={{ marginBottom: 8 }} />
+                <Skeleton width="35%" height={13} style={{ marginBottom: 6 }} />
+                <Skeleton width="20%" height={11} />
+              </View>
+              <View style={[styles.callbackButton, { borderWidth: 0 }]}>
+                <Skeleton width={44} height={44} borderRadius={22} />
+              </View>
+            </View>
+          ))}
         </View>
       </View>
     );

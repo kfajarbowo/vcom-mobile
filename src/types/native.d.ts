@@ -2,7 +2,7 @@
  * Native module type definitions for call notifications
  */
 
-import { EmitterSubscription } from 'react-native';
+
 
 export interface IncomingCallData {
   callId: string;

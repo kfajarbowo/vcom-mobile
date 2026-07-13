@@ -85,6 +85,7 @@ export function RegisterScreen({ navigation }: Props) {
       setValue('rank', ''); // Reset rank when branch changes
       fetchRanks(watchBranch);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchBranch]);
 
   const fetchBranches = async () => {
@@ -119,7 +120,8 @@ export function RegisterScreen({ navigation }: Props) {
   const onSubmit = async (data: RegisterForm) => {
     try {
       setIsLoading(true);
-      const { confirmPassword, ...registerData } = data;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { confirmPassword: _confirmPassword, ...registerData } = data;
 
       console.log('[Register] Attempting registration for:', registerData.callsign);
       console.log('[Register] Registration data:', registerData);
@@ -150,8 +152,7 @@ export function RegisterScreen({ navigation }: Props) {
       console.error('[Register] Error message:', errorMessage);
 
       // Parse common error messages for better UX
-      let userFriendlyMessage = errorMessage;
-      let suggestions: string[] = [];
+      const suggestions: string[] = [];
 
       if (errorMessage.includes('NRP') || errorMessage.includes('already registered')) {
         suggestions.push('This NRP/ID is already registered');
@@ -310,7 +311,7 @@ export function RegisterScreen({ navigation }: Props) {
                         onValueChange={onChange}
                         enabled={!!watchBranch && ranks.length > 0}
                         style={styles.picker}
-                        dropdownIconColor={watchBranch ? "#a6c455" : "#666"}>
+                        dropdownIconColor={watchBranch ? '#a6c455' : '#666'}>
                         <Picker.Item
                           label={!watchBranch ? 'SELECT BRANCH FIRST' : 'SELECT RANK'}
                           value=""

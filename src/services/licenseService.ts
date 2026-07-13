@@ -4,10 +4,6 @@ import { getDeviceHardwareId } from '../utils/deviceInfo';
 
 const LICENSE_STORAGE_KEY = 'vcomm_license_key';
 
-// License server defaults (separate from main app server)
-const DEFAULT_LICENSE_HOST = '';
-const DEFAULT_LICENSE_PORT = '';
-
 /**
  * Get license server base URL
  */
@@ -20,8 +16,8 @@ export const getLicenseServerUrl = async (): Promise<string> => {
     const storedHost = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_HOST);
     const storedPort = await AsyncStorage.getItem(STORAGE_KEYS.LICENSE_SERVER_PORT);
 
-    if (storedHost) host = storedHost;
-    if (storedPort) port = storedPort;
+    if (storedHost) {host = storedHost;}
+    if (storedPort) {port = storedPort;}
   } catch (error) {
     console.error('[License] Error reading license server config from storage:', error);
   }
@@ -132,7 +128,7 @@ export const activateLicenseOnServer = async (licenseKey: string): Promise<Licen
       body: JSON.stringify({
         licenseKey,
         hardwareId,
-        deviceName
+        deviceName,
       }),
     });
     const data = await res.json();

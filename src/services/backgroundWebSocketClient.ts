@@ -70,7 +70,7 @@ class BackgroundWebSocketClient {
         if (!isNaN(userIdInt)) {
           const authMsg = {
             type: 'auth',
-            payload: { userId: userIdInt }
+            payload: { userId: userIdInt },
           };
           this.websocket?.send(JSON.stringify(authMsg));
           console.log('[BackgroundWebSocketClient] Auth sent for userId:', userIdInt);
@@ -81,10 +81,10 @@ class BackgroundWebSocketClient {
         try {
           // React Native WebSocket event.data is string
           const dataString = typeof event.data === 'string' ? event.data : '';
-          if (!dataString) return;
+          if (!dataString) {return;}
 
           const message: WebSocketMessage = JSON.parse(dataString);
-          if (!message) return;
+          if (!message) {return;}
           console.log('[BackgroundWebSocketClient] Message received:', message.type);
           this.onMessage?.(message);
         } catch (error) {

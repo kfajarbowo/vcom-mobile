@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, Animated, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Animated } from 'react-native';
 import { create } from 'zustand';
 
 type ToastType = 'success' | 'error' | 'info' | 'warning';
@@ -44,9 +44,10 @@ export function Toast() {
         useNativeDriver: true,
       }).start();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  if (!visible) return null;
+  if (!visible) { return null; }
 
   const backgroundColor = {
     success: '#10B981',

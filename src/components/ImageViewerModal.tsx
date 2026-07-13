@@ -7,7 +7,6 @@ import {
   StyleSheet,
   StatusBar,
   ActivityIndicator,
-  Dimensions,
 } from 'react-native';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -26,7 +25,6 @@ export function ImageViewerModal({
   imageName,
   onClose,
 }: ImageViewerModalProps) {
-  const [loading, setLoading] = useState(true);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,7 +43,6 @@ export function ImageViewerModal({
   ];
 
   const handleClose = () => {
-    setLoading(true);
     onClose();
   };
 
@@ -81,15 +78,13 @@ export function ImageViewerModal({
             enableSwipeDown={true}
             onSwipeDown={handleClose}
             backgroundColor="#000000"
-            renderIndicator={() => null}
+            renderIndicator={(): React.ReactElement => <></>}
             loadingRender={() => (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color="#a6c455" />
                 <Text style={styles.loadingText}>LOADING IMAGE...</Text>
               </View>
             )}
-            onLoadEnd={() => setLoading(false)}
-            enableImageZoom={true}
             saveToLocalByLongPress={false}
             doubleClickInterval={300}
             renderHeader={() => <View style={{height: 60}} />}

@@ -17,6 +17,7 @@ import { websocketService } from '../services/websocket';
 interface User {
   id: number;
   callsign: string;
+  username?: string;
   fullName?: string;
   rank?: string;
   branch?: string;
@@ -59,7 +60,7 @@ export function NewConversation({
           const uid = Number(message.payload.userId);
           const status = message.payload.status;
           setUserStatuses(prev => {
-            if (prev.get(uid) === status) return prev;
+            if (prev.get(uid) === status) {return prev;}
             const next = new Map(prev);
             next.set(uid, status);
             return next;
@@ -68,6 +69,7 @@ export function NewConversation({
       });
       return () => unsubscribe();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   // Show group name input automatically when 2+ users selected
@@ -100,13 +102,13 @@ export function NewConversation({
     try {
       setIsLoading(true);
       const allUsers = await apiRequest('/api/all-users');
-      const filteredUsers = allUsers.filter((u: User) => u.id !== user?.id);
-      setUsers(filteredUsers);
-      setFilteredUsers(filteredUsers);
+      const filteredList = allUsers.filter((u: User) => u.id !== user?.id);
+      setUsers(filteredList);
+      setFilteredUsers(filteredList);
       // Seed the status map from the API response
       const statusMap = new Map<number, string>();
       allUsers.forEach((u: any) => {
-        if (u.id && u.status) statusMap.set(Number(u.id), u.status);
+        if (u.id && u.status) {statusMap.set(Number(u.id), u.status);}
       });
       setUserStatuses(statusMap);
     } catch (error) {
@@ -125,7 +127,7 @@ export function NewConversation({
   };
 
   const handleCreateConversation = async () => {
-    if (selectedUsers.length === 0) return;
+    if (selectedUsers.length === 0) {return;}
 
     // For group chats, require group name
     if (selectedUsers.length > 1 && !groupName.trim()) {
@@ -146,11 +148,12 @@ export function NewConversation({
           }),
         });
 
-        const directChatPartnerName = selectedUsers[0].callsign || selectedUsers[0].fullName || selectedUsers[0].username;
+        const selectedUser = users.find(u => u.id === selectedUsers[0]);
+        const directChatPartnerName = selectedUser?.callsign || selectedUser?.fullName || selectedUser?.username;
         onConversationCreated(response.id, false, directChatPartnerName);
       } else {
 
-        console.log("selected users:", selectedUsers)
+        console.log('selected users:', selectedUsers);
         console.log('[NewConversation] Creating group chat:', groupName);
         console.log('[NewConversation] Request body:', {
           name: groupName.trim(),

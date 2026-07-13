@@ -11,7 +11,6 @@ import {
   ActivityIndicator,
   StyleSheet,
   Image,
-  Linking,
   Modal,
   Alert,
   BackHandler,
@@ -25,7 +24,7 @@ import DocumentPicker from 'react-native-document-picker';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useChatStore, type Message } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
-import { apiRequest, getApiBaseUrl, downloadAndOpenPDF, downloadAndOpenDocument, getSessionToken } from '../services/apiClient';
+import { apiRequest, getApiBaseUrl, downloadAndOpenDocument, getSessionToken } from '../services/apiClient';
 import { websocketService } from '../services/websocket';
 import { webrtcService } from '../services/webrtcService';
 import { useCallStore } from '../store/callStore';
@@ -59,7 +58,7 @@ export function ChatRoom({
   const addMessage = useChatStore((state) => state.addMessage);
 
   // Subscribe to call state to check for active group calls
-  const callState = useCallStore((state) => ({
+  const callState = useCallStore((state: ReturnType<typeof useCallStore.getState>) => ({
     status: state.status,
     isGroupCall: state.isGroupCall,
     conversationId: state.conversationId,
@@ -146,7 +145,7 @@ export function ChatRoom({
   // Query server for active group call on this conversation (rejoin feature)
   // Re-checks when callState.status changes (e.g. user leaves call → status goes to 'idle')
   useEffect(() => {
-    if (!isGroup) return;
+    if (!isGroup) {return;}
 
     const checkActiveCall = async () => {
       try {
@@ -191,7 +190,7 @@ export function ChatRoom({
 
   // Track other user's online status for direct chats
   useEffect(() => {
-    if (isGroup) return;
+    if (isGroup) {return;}
 
     // Get the other member from conversationMembers (includes status)
     if (conversationMembers.length >= 2) {
@@ -207,7 +206,7 @@ export function ChatRoom({
 
   // Subscribe to real-time status updates
   useEffect(() => {
-    if (isGroup) return;
+    if (isGroup) {return;}
 
     // Get the other user's ID
     let targetUserId = otherUserId;
@@ -216,7 +215,7 @@ export function ChatRoom({
       targetUserId = otherMember?.userId;
     }
 
-    if (!targetUserId) return;
+    if (!targetUserId) {return;}
 
     console.log('[ChatRoom] Subscribing to status updates for userId:', targetUserId);
 
@@ -321,9 +320,10 @@ export function ChatRoom({
 
   // Clean up audio player on unmount
   useEffect(() => {
+    const player = audioPlayerRef.current;
     return () => {
-      audioPlayerRef.current.stopPlayer().catch(() => { });
-      audioPlayerRef.current.removePlayBackListener();
+      player.stopPlayer().catch(() => { });
+      player.removePlayBackListener();
     };
   }, []);
 
@@ -439,6 +439,7 @@ export function ChatRoom({
       removeHandler();
       useChatStore.getState().setCurrentConversationId(null);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, conversationMembers, user?.id]);
 
   const loadMessages = async (showLoading: boolean = false, loadMore: boolean = false) => {
@@ -447,10 +448,10 @@ export function ChatRoom({
         setIsLoading(true);
       }
 
-      const paginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
+      const currentPaginationInfo = useChatStore.getState().getPaginationInfo(conversationId);
 
       // If already loading or no more messages, return
-      if (loadMore && (paginationInfo?.isLoading || !paginationInfo?.hasMore)) {
+      if (loadMore && (currentPaginationInfo?.isLoading || !currentPaginationInfo?.hasMore)) {
         console.log('[ChatRoom] Skipping load - already loading or no more messages');
         return;
       }
@@ -580,9 +581,9 @@ export function ChatRoom({
   // Helper function to get document icon and color based on file type
   // Infer MIME type from file extension when the picker doesn't provide one
   const getMimeTypeFromName = (fileName: string | undefined): string | null => {
-    if (!fileName) return null;
+    if (!fileName) {return null;}
     const ext = fileName.split('.').pop()?.toLowerCase();
-    if (!ext) return null;
+    if (!ext) {return null;}
     const mimeMap: Record<string, string> = {
       pdf: 'application/pdf',
       doc: 'application/msword',
@@ -836,7 +837,7 @@ export function ChatRoom({
 
   const uploadAttachment = async (file: any): Promise<any> => {
     const uploadUrl = `${await getApiBaseUrl()}/api/attachments/upload`;
-    const sessionToken = await getSessionToken();
+    const currentToken = await getSessionToken();
 
     try {
       // Normalize file URI for RNFetchBlob — wrap() requires a raw filesystem path.
@@ -882,7 +883,7 @@ export function ChatRoom({
         'POST',
         uploadUrl,
         {
-          'X-Session-Token': sessionToken || '',
+          'X-Session-Token': currentToken || '',
           'Content-Type': 'multipart/form-data',
         },
         [
@@ -913,7 +914,7 @@ export function ChatRoom({
         let errorMsg = `Upload failed (${status})`;
         try {
           const body = JSON.parse(res.data);
-          if (body.message) errorMsg = body.message;
+          if (body.message) {errorMsg = body.message;}
         } catch { }
         throw new Error(errorMsg);
       }
@@ -925,7 +926,7 @@ export function ChatRoom({
   };
 
   const sendMessage = async () => {
-    if ((!messageText.trim() && !selectedAttachment) || !user || isSending) return;
+    if ((!messageText.trim() && !selectedAttachment) || !user || isSending) {return;}
 
     const content = messageText.trim() || (selectedAttachment ? '[Attachment]' : '');
     setMessageText('');
@@ -934,7 +935,7 @@ export function ChatRoom({
     console.log('[ChatRoom] Sending message from user:', user.id);
 
     try {
-      let attachmentData = null;
+      let attachmentData: any = null;
 
       // Upload attachment if selected
       if (selectedAttachment) {
@@ -1075,7 +1076,7 @@ export function ChatRoom({
         attachmentName: attachmentData.name,
         attachmentSize: attachmentData.size,
       };
-      const response = await apiRequest('/api/messages', {
+      await apiRequest('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messagePayload),
@@ -1120,7 +1121,7 @@ export function ChatRoom({
             const match = conv.name.match(/Direct Chat (\d+)-(\d+)/);
             if (match && user) {
               const [_, id1, id2] = match;
-              const partnerId = parseInt(id1) === user.id ? parseInt(id2) : parseInt(id1);
+              const partnerId = parseInt(id1, 10) === user.id ? parseInt(id2, 10) : parseInt(id1, 10);
               const partner = usersData.find((u: any) => u.id === partnerId);
               if (partner) {
                 return {
@@ -1143,7 +1144,7 @@ export function ChatRoom({
   };
 
   const handleForwardToConversation = async (targetConversationId: number) => {
-    if (!messageToForward) return;
+    if (!messageToForward) {return;}
 
     try {
       console.log('[ChatRoom] Forwarding message to conversation:', targetConversationId);
@@ -1208,7 +1209,7 @@ export function ChatRoom({
           currentUserId: user?.id,
           currentUserIdType: typeof user?.id,
           matches: member.userId === user?.id,
-          notMatches: member.userId !== user?.id
+          notMatches: member.userId !== user?.id,
         });
       });
 
@@ -1332,8 +1333,8 @@ export function ChatRoom({
           groupName: conversationName,
           callType,
           fromUserId: user?.id,
-          fromUserName: user?.callsign || user?.username || 'Unknown'
-        }
+          fromUserName: user?.callsign || user?.username || 'Unknown',
+        },
       });
 
       // Start WebRTC group call
@@ -1389,7 +1390,7 @@ export function ChatRoom({
       [
         {
           text: 'Cancel',
-          style: 'cancel'
+          style: 'cancel',
         },
         {
           text: 'Remove',
@@ -1397,7 +1398,7 @@ export function ChatRoom({
           onPress: async () => {
             try {
               await apiRequest(`/api/groups/${conversationId}/members/${memberId}`, {
-                method: 'DELETE'
+                method: 'DELETE',
               });
 
               // Refresh member list
@@ -1411,8 +1412,8 @@ export function ChatRoom({
               console.error('[ChatRoom] Error removing member:', error);
               Alert.alert('Error', error.message || 'Failed to remove member.');
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
@@ -1501,7 +1502,7 @@ export function ChatRoom({
   };
 
   const performDelete = async (deleteForEveryone: boolean) => {
-    if (!messageToDelete) return;
+    if (!messageToDelete) {return;}
 
     try {
       console.log('[ChatRoom] Deleting message:', messageToDelete.id, 'deleteForEveryone:', deleteForEveryone);
@@ -1523,10 +1524,10 @@ export function ChatRoom({
   };
 
   const formatTime = (timestamp: string): string => {
-    if (!timestamp) return '';
+    if (!timestamp) {return '';}
     try {
       const date = new Date(timestamp);
-      if (isNaN(date.getTime())) return '';
+      if (isNaN(date.getTime())) {return '';}
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
       return '';
@@ -1534,7 +1535,7 @@ export function ChatRoom({
   };
 
   const renderMessage = ({ item }: { item: Message }): JSX.Element => {
-    if (!item) return <View />;
+    if (!item) {return <View />;}
 
     // Ensure both are numbers for comparison
     const isOwnMessage = Number(item.senderId) === Number(user?.id);
@@ -1566,7 +1567,7 @@ export function ChatRoom({
     // Build an Image source with auth headers for authenticated /uploads endpoint
     const getAuthImageSource = (url: string | undefined) => {
       const fullUrl = getFullAttachmentUrl(url);
-      if (!fullUrl) return { uri: '' };
+      if (!fullUrl) {return { uri: '' };}
       const token = sessionToken || sessionTokenRef.current;
       return {
         uri: fullUrl,
@@ -1643,7 +1644,7 @@ export function ChatRoom({
                       source={getAuthImageSource(item.attachmentUrl)}
                       style={styles.attachmentImage}
                       resizeMode="cover"
-                      pointerEvents="none"
+                      accessible={false}
                       onError={(error) => {
                         console.log('[ChatRoom] Image load error:', error.nativeEvent);
                       }}
@@ -1823,7 +1824,7 @@ export function ChatRoom({
       if (messageRef && flatList) {
         // Measure the message position relative to the FlatList
         messageRef.measureLayout(
-          flatList.getNativeScrollRef(),
+          flatList.getNativeScrollRef() as any,
           (x, y, width, height) => {
             console.log('[ChatRoom] Message measured position:', { x, y, width, height });
 
@@ -1837,8 +1838,8 @@ export function ChatRoom({
               animated: false,
             });
           },
-          (error) => {
-            console.log('[ChatRoom] measureLayout failed:', error);
+          () => {
+            console.log('[ChatRoom] measureLayout failed');
           }
         );
       } else {
@@ -1858,7 +1859,7 @@ export function ChatRoom({
 
   // Render loading indicator for pagination
   const renderLoadingIndicator = () => {
-    if (!paginationInfo?.isLoading) return null;
+    if (!paginationInfo?.isLoading) {return null;}
 
     return (
       <View style={styles.loadingMoreContainer}>
@@ -1988,13 +1989,13 @@ export function ChatRoom({
                 style={[
                   styles.messageRow,
                   isMe ? styles.ownMessageRow : styles.otherMessageRow,
-                  { opacity: 0.7 }
+                  { opacity: 0.7 },
                 ]}>
                 <View
                   style={[
                     styles.messageBubble,
                     isMe ? styles.ownMessage : styles.otherMessage,
-                    { minWidth: 150, minHeight: 60, padding: 12, backgroundColor: '#2a2a2a', borderWidth: 0 }
+                    { minWidth: 150, minHeight: 60, padding: 12, backgroundColor: '#2a2a2a', borderWidth: 0 },
                   ]}>
                   <Skeleton width="80%" height={12} style={{ marginBottom: 8 }} />
                   <Skeleton width="50%" height={12} style={{ marginBottom: 12 }} />
@@ -2229,7 +2230,7 @@ export function ChatRoom({
                 onPress={handleAttachment}
                 disabled={isSending}>
                 <MaterialCommunityIcons
-                  name={attachmentMenuVisible ? "close" : "paperclip"}
+                  name={attachmentMenuVisible ? 'close' : 'paperclip'}
                   size={22}
                   color={isSending ? '#3a3a3a' : attachmentMenuVisible ? '#ff4444' : '#a6c455'}
                 />

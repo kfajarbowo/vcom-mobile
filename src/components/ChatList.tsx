@@ -4,7 +4,6 @@ import {
   Text,
   FlatList,
   TouchableOpacity,
-  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -25,6 +24,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
   const conversations = useChatStore((state) => state.conversations);
   const setConversations = useChatStore((state) => state.setConversations);
   const [isLoading, setIsLoading] = useState(true);
+  const [isUsersLoaded, setIsUsersLoaded] = useState(false);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [userStatuses, setUserStatuses] = useState<Map<number, string>>(new Map());
   const [showNewConversation, setShowNewConversation] = useState(false);
@@ -83,7 +83,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
       const status = message.payload.status;
       setUserStatuses(prev => {
         // Skip update if status hasn't changed to avoid unnecessary re-renders
-        if (prev.get(userId) === status) return prev;
+        if (prev.get(userId) === status) {return prev;}
         const newMap = new Map(prev);
         newMap.set(userId, status);
         return newMap;
@@ -134,6 +134,10 @@ export function ChatList({onSelectChat}: ChatListProps) {
       console.log('[ChatList] Loaded user statuses:', statusMap.size);
     } catch (error) {
       console.error('Error loading users:', error);
+    } finally {
+      // Mark users as loaded regardless of success/failure
+      // so skeleton doesn't get stuck if API fails
+      setIsUsersLoaded(true);
     }
   };
 
@@ -151,7 +155,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
       if (match && user) {
         const [_, id1, id2] = match;
         const partnerId =
-          parseInt(id1) === user.id ? parseInt(id2) : parseInt(id1);
+          parseInt(id1, 10) === user.id ? parseInt(id2, 10) : parseInt(id1, 10);
         const partner = allUsers.find((u) => u.id === partnerId);
         return partner?.callsign || partner?.fullName || conversation.name || 'Unknown User';
       }
@@ -161,10 +165,10 @@ export function ChatList({onSelectChat}: ChatListProps) {
   };
 
   const formatTime = (timestamp: string): string => {
-    if (!timestamp) return '';
+    if (!timestamp) {return '';}
     try {
       const date = new Date(timestamp);
-      if (isNaN(date.getTime())) return '';
+      if (isNaN(date.getTime())) {return '';}
       return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
     } catch {
       return '';
@@ -198,7 +202,7 @@ export function ChatList({onSelectChat}: ChatListProps) {
       const match = conversation.name.match(/Direct Chat (\d+)-(\d+)/);
       if (match && user) {
         const [_, id1, id2] = match;
-        const partnerId = parseInt(id1) === user.id ? parseInt(id2) : parseInt(id1);
+        const partnerId = parseInt(id1, 10) === user.id ? parseInt(id2, 10) : parseInt(id1, 10);
         const status = userStatuses.get(partnerId);
         return status === 'online';
       }
@@ -276,11 +280,14 @@ export function ChatList({onSelectChat}: ChatListProps) {
     }
   };
 
-  if (isLoading) {
+  // Show skeleton until BOTH conversations AND users are loaded.
+  // Without this guard, conversations can finish first and render raw
+  // "Direct Chat X-Y" names while allUsers is still empty.
+  if (isLoading || !isUsersLoaded) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>COMMUNICATIONS</Text>
+          <Text style={styles.headerTitle}>SECURE CHANNELS</Text>
           <View style={styles.headerDivider} />
         </View>
         <View style={styles.listContent}>

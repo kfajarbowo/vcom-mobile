@@ -56,6 +56,7 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
       pulseRef.current?.stop();
       pulseAnim.setValue(1);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
   const requestRecordingPermissions = async (): Promise<boolean> => {
@@ -108,7 +109,7 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
 
   const startRecording = async () => {
     const hasPermission = await requestRecordingPermissions();
-    if (!hasPermission) return;
+    if (!hasPermission) {return;}
 
     try {
       // Always stop any previous recorder session first to prevent
@@ -153,7 +154,7 @@ export function VoiceNoteRecorder({ onSend, onCancel }: VoiceNoteRecorderProps) 
   };
 
   const playRecording = async () => {
-    if (!recordedUri) return;
+    if (!recordedUri) {return;}
     try {
       await audioRecorderPlayer.startPlayer(recordedUri);
       audioRecorderPlayer.addPlayBackListener((e) => {

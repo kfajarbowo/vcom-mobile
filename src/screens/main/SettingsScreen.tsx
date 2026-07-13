@@ -20,11 +20,11 @@ export function SettingsScreen() {
   const [isPasswordLoading, setIsPasswordLoading] = useState(false);
 
   // Gotify settings state
-  const [gotifyUrl, setGotifyUrl] = useState('');
-  const [gotifyToken, setGotifyToken] = useState('');
-  const [isEditingGotify, setIsEditingGotify] = useState(false);
-  const [gotifyServiceEnabled, setGotifyServiceEnabled] = useState(false);
-  const [isLoadingGotify, setIsLoadingGotify] = useState(false);
+  // const [gotifyUrl, _setGotifyUrl] = useState('');
+  // const [gotifyToken, _setGotifyToken] = useState('');
+  // const [isEditingGotify, _setIsEditingGotify] = useState(false);
+  // const [gotifyServiceEnabled, _setGotifyServiceEnabled] = useState(false);
+  // const [isLoadingGotify, _setIsLoadingGotify] = useState(false);
 
   // License info
   const { licenseKey } = useLicenseStore();
@@ -56,8 +56,8 @@ export function SettingsScreen() {
       try {
         const host = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST);
         const port = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT);
-        if (host) setServerHost(host);
-        if (port) setServerPort(port);
+        if (host) {setServerHost(host);}
+        if (port) {setServerPort(port);}
       } catch (error) {
         console.error('Failed to load server config:', error);
       }
@@ -78,7 +78,7 @@ export function SettingsScreen() {
 
         // Check connectivity for all sites in parallel
         setSiteStatuses(Object.fromEntries(sites.map(s => [s.ip, null]))); // null = checking
-        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort) || 5000);
+        const statuses = await checkAllSitesStatus(sites, parseInt(serverPort, 10) || 5000);
         setSiteStatuses(statuses);
 
         // Auto-deselect if the currently selected site is offline
@@ -91,6 +91,7 @@ export function SettingsScreen() {
       };
       loadSites();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditingServer, customSites.length]);
 
   const handleSaveServer = async () => {
@@ -454,7 +455,7 @@ export function SettingsScreen() {
                   <TextInput
                     style={[
                       styles.portInput,
-                      !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' }
+                      !isPortEnabled && { opacity: 0.5, backgroundColor: '#111' },
                     ]}
                     placeholder="5000"
                     placeholderTextColor="#555"

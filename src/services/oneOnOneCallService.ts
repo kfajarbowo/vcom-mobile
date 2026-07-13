@@ -90,7 +90,6 @@ export class OneOnOneCallService {
       this.peerConnection.close();
 
       // Set to null immediately to prevent reuse
-      const oldConnection = this.peerConnection;
       this.peerConnection = null;
 
       // Wait longer for TURN server to process deallocation (coturn needs time)
@@ -493,7 +492,6 @@ export class OneOnOneCallService {
 
       // Get call state
       const callState = useCallStore.getState();
-      const { user } = useAuthStore.getState();
 
       // Guard against a cancelled/reset call: never emit accept_call/webrtc_answer with a null
       // callId or caller — the server would broadcast the answer to every user.
@@ -563,8 +561,8 @@ export class OneOnOneCallService {
   // Attempt a bounded ICE restart by creating a fresh offer with iceRestart:true and re-sending it.
   // The peer applies it via handleRenegotiationOffer (a webrtc_offer for the current active call).
   private async tryIceRestart(): Promise<void> {
-    if (!this.peerConnection) return;
-    if ((this.peerConnection.signalingState as string) === 'closed') return;
+    if (!this.peerConnection) {return;}
+    if ((this.peerConnection.signalingState as string) === 'closed') {return;}
 
     if (this.iceRestartAttempts >= OneOnOneCallService.MAX_ICE_RESTARTS) {
       console.log('[WebRTC 1:1] ICE restart budget exhausted - ending call');
@@ -645,12 +643,12 @@ export class OneOnOneCallService {
 
   // Trigger a renegotiation offer (e.g. after enabling video mid-call when no video is negotiated).
   async renegotiate(): Promise<void> {
-    if (!this.peerConnection) return;
-    if ((this.peerConnection.signalingState as string) !== 'stable') return;
+    if (!this.peerConnection) {return;}
+    if ((this.peerConnection.signalingState as string) !== 'stable') {return;}
     try {
       const otherUserId = this.getOtherUserId();
       const callState = useCallStore.getState();
-      if (!otherUserId || !callState.callId) return;
+      if (!otherUserId || !callState.callId) {return;}
 
       const offer = await this.peerConnection.createOffer({});
       await this.peerConnection.setLocalDescription(offer);
@@ -692,7 +690,7 @@ export class OneOnOneCallService {
   // causing the video to look blurry even at 720p capture resolution.
   private async boostVideoBitrate(): Promise<void> {
     try {
-      if (!this.peerConnection) return;
+      if (!this.peerConnection) {return;}
 
       const senders = this.peerConnection.getSenders();
       for (const sender of senders) {
@@ -786,8 +784,8 @@ export class OneOnOneCallService {
         console.log('[WebRTC 1:1] Stopped local track:', track.kind);
       });
       // release() disposes the native camera capturer + SurfaceTextureHelper thread natively
-      // NOTE: We MUST NOT call track.release() individually if we are calling stream.release(), 
-      // as stream.release() automatically attempts to release all its native tracks, causing 
+      // NOTE: We MUST NOT call track.release() individually if we are calling stream.release(),
+      // as stream.release() automatically attempts to release all its native tracks, causing
       // a double-dispose crash if they are already released.
       try { (localStream as any).release?.(); } catch (e) { /* no-op */ }
     }

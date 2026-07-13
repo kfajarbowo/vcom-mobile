@@ -7,7 +7,6 @@ import {
   checkLicenseOnServer,
   activateLicenseOnServer,
   type LicenseCheckResult,
-  type LicenseActivationResult,
 } from '../services/licenseService';
 
 export interface LicenseActivateResult {

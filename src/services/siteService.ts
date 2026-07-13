@@ -1,4 +1,4 @@
-import { Alert } from 'react-native';
+
 
 export interface Site {
   label: string;
@@ -88,7 +88,7 @@ export const fetchCustomSites = async (appKey: string = 'chat'): Promise<Site[]>
         // If data.data is an object but doesn't have .sites, it might be the items themselves as a map
         rawItems = Object.entries(data.data).map(([key, value]) => ({
           key,
-          ...(typeof value === 'object' ? value : { value })
+          ...(typeof value === 'object' ? value : { value }),
         }));
       } else {
         // Last resort: check if data itself is a map (excluding status fields)
@@ -96,7 +96,7 @@ export const fetchCustomSites = async (appKey: string = 'chat'): Promise<Site[]>
         if (entries.length > 0) {
           rawItems = entries.map(([key, value]) => ({
             key,
-            ...(typeof value === 'object' ? value : { value })
+            ...(typeof value === 'object' ? value : { value }),
           }));
         }
       }

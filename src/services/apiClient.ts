@@ -5,8 +5,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFetchBlob from 'rn-fetch-blob';
-import { Platform, Linking, Share, NativeModules } from 'react-native';
-import FileViewer from 'react-native-file-viewer';
+import { Platform, NativeModules } from 'react-native';
 
 const { FileOpener } = NativeModules;
 
@@ -33,8 +32,8 @@ export const getApiBaseUrl = async (): Promise<string> => {
     const storedHost = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_HOST);
     const storedPort = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_PORT);
 
-    if (storedHost) host = storedHost;
-    if (storedPort) port = storedPort;
+    if (storedHost) {host = storedHost;}
+    if (storedPort) {port = storedPort;}
   } catch (error) {
     console.error('[API] Error reading server config from storage:', error);
   }
@@ -78,7 +77,7 @@ export const apiFetch = async (
   // Send session token via header for authentication
   if (sessionToken) {
     headers['X-Session-Token'] = sessionToken;
-    console.log(`[API] Added X-Session-Token header`);
+    console.log('[API] Added X-Session-Token header');
   }
 
   // Add timeout handling
@@ -91,7 +90,7 @@ export const apiFetch = async (
       ...options,
       headers,
       credentials: 'include', // Important for session cookies
-      signal: controller.signal
+      signal: controller.signal,
     });
     clearTimeout(timeoutId);
     console.log(`[API] Response received: ${response.status}`);

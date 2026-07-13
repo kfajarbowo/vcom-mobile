@@ -69,7 +69,7 @@ export function GroupCallScreen() {
     }
   };
 
-  const renderParticipantTile = (participant: any, index: number) => {
+  const renderParticipantTile = (participant: any, _index: number) => {
     const participantCount = participants.length;
     const tilesPerRow = participantCount <= 2 ? 1 : 2;
     const tileWidth = SCREEN_WIDTH / tilesPerRow - 16;
@@ -157,7 +157,7 @@ export function GroupCallScreen() {
         <ScrollView
           style={styles.participantsContainer}
           contentContainerStyle={styles.participantsGrid}>
-          {participants.map((participant: Participant, index: any) =>
+          {(participants as Participant[]).map((participant: Participant, index: number) =>
             renderParticipantTile(participant, index)
           )}
         </ScrollView>

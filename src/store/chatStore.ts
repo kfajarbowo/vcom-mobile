@@ -186,7 +186,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   getCurrentMessages: () => {
     const state = get();
-    if (!state.currentConversationId) return [];
+    if (!state.currentConversationId) {return [];}
     return state.messages.get(state.currentConversationId) || [];
   },
 
