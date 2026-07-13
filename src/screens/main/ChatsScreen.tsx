@@ -12,6 +12,7 @@ export function ChatsScreen() {
     isGroup: boolean;
     name: string;
     otherUserId?: number;
+    isOnline?: boolean;
   } | null>(null);
 
   const conversations = useChatStore((state) => state.conversations);
@@ -34,7 +35,7 @@ export function ChatsScreen() {
 
   console.log('[ChatsScreen] Render - selectedConversation:', selectedConversation?.id);
 
-  const handleSelectChat = (conversationId: number, isGroup: boolean, displayName?: string) => {
+  const handleSelectChat = (conversationId: number, isGroup: boolean, displayName?: string, isOnline?: boolean) => {
     const conversation = conversations.find((c) => c.id === conversationId);
     if (conversation) {
       console.log('[ChatsScreen] Selected conversation:', conversation);
@@ -44,6 +45,7 @@ export function ChatsScreen() {
         isGroup,
         name: displayName || conversation.name,
         otherUserId: conversation.otherUserId,
+        isOnline: isOnline || false,
       });
     }
   };
@@ -60,6 +62,7 @@ export function ChatsScreen() {
           isGroup={selectedConversation.isGroup}
           conversationName={selectedConversation.name}
           otherUserId={selectedConversation.otherUserId}
+          initialOnlineStatus={selectedConversation.isOnline}
           onBack={handleBack}
         />
       </View>

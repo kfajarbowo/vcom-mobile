@@ -42,6 +42,7 @@ interface ChatRoomProps {
   isGroup: boolean;
   conversationName: string;
   otherUserId?: number;
+  initialOnlineStatus?: boolean;
   onBack: () => void;
 }
 
@@ -50,6 +51,7 @@ export function ChatRoom({
   isGroup,
   conversationName,
   otherUserId,
+  initialOnlineStatus,
   onBack,
 }: ChatRoomProps) {
   const { user } = useAuthStore();
@@ -88,7 +90,7 @@ export function ChatRoom({
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [infoModalVisible, setInfoModalVisible] = useState(false);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<any | null>(null);
-  const [otherUserOnline, setOtherUserOnline] = useState<boolean>(false);
+  const [otherUserOnline, setOtherUserOnline] = useState<boolean>(initialOnlineStatus || false);
   const [viewingRepliedMessage, setViewingRepliedMessage] = useState<Message | null>(null);
   const [addMemberModalVisible, setAddMemberModalVisible] = useState(false);
   const [availableUsersToAdd, setAvailableUsersToAdd] = useState<any[]>([]);
@@ -196,7 +198,9 @@ export function ChatRoom({
       const otherMember = conversationMembers.find((m: any) => m.userId !== user?.id);
       if (otherMember) {
         console.log('[ChatRoom] Other member found:', otherMember.callsign, 'status:', otherMember.status);
-        setOtherUserOnline(otherMember.status === 'online');
+        // NOTE: We intentionally DO NOT update setOtherUserOnline here anymore.
+        // The API /api/conversations/.../members can return stale or incorrect 'online' statuses.
+        // Instead, we rely on `initialOnlineStatus` from ChatList and WebSocket `user_status` events.
       }
     }
   }, [isGroup, conversationMembers, user?.id]);
