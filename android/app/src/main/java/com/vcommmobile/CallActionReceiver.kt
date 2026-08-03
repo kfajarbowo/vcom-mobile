@@ -34,8 +34,12 @@ class CallActionReceiver : BroadcastReceiver() {
         val notificationManager = NotificationManagerCompat.from(context)
         notificationManager.cancel(CallNotificationModule.NOTIFICATION_ID)
 
-        // Close the IncomingCallActivity if open
+        // Close the IncomingCallActivity if open. setPackage keeps the broadcast
+        // inside this app: the VPN variant is installed alongside the regular
+        // VComm, and an unrestricted broadcast would close the other one's
+        // incoming-call screen too.
         val closeIntent = Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY")
+            .setPackage(context.packageName)
         context.sendBroadcast(closeIntent)
 
         when (action) {

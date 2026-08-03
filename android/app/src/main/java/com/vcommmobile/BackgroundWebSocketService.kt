@@ -675,7 +675,12 @@ class BackgroundWebSocketService : Service() {
         try {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(CallNotificationModule.NOTIFICATION_ID)
-            sendBroadcast(Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY"))
+            // setPackage: varian VPN terpasang berdampingan dengan VComm biasa,
+            // dan broadcast tanpa batas package bisa menutup layar panggilan
+            // milik aplikasi sebelah.
+            sendBroadcast(
+                Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY").setPackage(packageName)
+            )
             Log.d(TAG, "Incoming call UI dismissed (notification cancelled + close broadcast sent)")
         } catch (e: Exception) {
             Log.e(TAG, "Error dismissing incoming call UI: ${e.message}")

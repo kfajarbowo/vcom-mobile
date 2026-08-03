@@ -19,10 +19,9 @@ react {
     // cliFile = file("../../node_modules/react-native/cli.js")
 
     /* Variants */
-    //   The list of variants to that are debuggable. For those we're going to
-    //   skip the bundling of the JS bundle and the assets. By default is just 'debug'.
-    //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
-    // debuggableVariants = ["liteDebug", "prodDebug"]
+    //   Karena aplikasi ini punya flavor (prod / vpn), nama varian debug-nya
+    //   ikut berubah — bawaannya "debug" saja tidak lagi cocok.
+    debuggableVariants = ["prodDebug", "vpnDebug"]
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -86,6 +85,29 @@ android {
         versionCode = 1
         versionName = "1.0"
     }
+
+    flavorDimensions "app"
+
+    productFlavors {
+        // Varian existing — applicationId & nama persis seperti sebelumnya,
+        // sehingga APK yang sudah terpasang di lapangan tergantikan seperti biasa.
+        prod {
+            dimension "app"
+        }
+        // Varian lapangan yang terhubung lewat VPN / Wi-Fi khusus.
+        //
+        // applicationIdSuffix membuat package-nya berbeda (com.vcommmobile.vpn),
+        // sehingga APK ini terpasang BERDAMPINGAN dengan VComm yang sudah ada —
+        // bukan menimpanya. Data (AsyncStorage, sesi) otomatis terpisah.
+        //
+        // Nama aplikasinya diambil dari src/vpn/res/values/strings.xml.
+        vpn {
+            dimension "app"
+            applicationIdSuffix ".vpn"
+            versionNameSuffix "-vpn"
+        }
+    }
+
     signingConfigs {
         debug {
             storeFile = file('debug.keystore')

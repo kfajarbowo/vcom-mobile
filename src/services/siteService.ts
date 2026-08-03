@@ -1,4 +1,4 @@
-
+import { resolveUrl } from '../utils/dnsMap';
 
 export interface Site {
   label: string;
@@ -54,7 +54,9 @@ export const checkAllSitesStatus = async (
  */
 export const fetchCustomSites = async (appKey: string = 'chat'): Promise<Site[]> => {
   try {
-    const url = `${BASE_SITES_API_URL}/${appKey}`;
+    // Master data dihubungi lewat hostname `blm.id`; di varian VPN nilainya
+    // ditukar menjadi IP karena jaringan lapangan tidak punya server DNS.
+    const url = await resolveUrl(`${BASE_SITES_API_URL}/${appKey}`);
     console.log(`[Sites] Fetching ${appKey} sites from:`, url);
 
     // Simple fetch without custom headers

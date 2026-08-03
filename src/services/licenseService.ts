@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from './apiClient';
 import { getDeviceHardwareId } from '../utils/deviceInfo';
+import { resolveHostname } from '../utils/dnsMap';
 
 const LICENSE_STORAGE_KEY = 'vcomm_license_key';
 
@@ -21,6 +22,10 @@ export const getLicenseServerUrl = async (): Promise<string> => {
   } catch (error) {
     console.error('[License] Error reading license server config from storage:', error);
   }
+
+  // Lihat catatan di getApiBaseUrl(): hostname internal ditukar menjadi IP
+  // karena jaringan lapangan tidak punya server DNS.
+  host = await resolveHostname(host);
 
   console.log(`[License] Using license server: ${protocol}://${host}:${port}`);
   return `${protocol}://${host}:${port}`;

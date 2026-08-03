@@ -130,7 +130,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
             notificationManager.cancel(NOTIFICATION_ID)
             
             // Also send broadcast to close IncomingCallActivity
+            // setPackage: see CallActionReceiver — keeps the broadcast from
+            // reaching the side-by-side VPN/regular build of this app.
             val closeIntent = Intent("com.vcommmobile.CLOSE_INCOMING_CALL_ACTIVITY")
+                .setPackage(context.packageName)
             context.sendBroadcast(closeIntent)
             
             Log.d(TAG, "Notification canceled and close broadcast sent")

@@ -2,7 +2,15 @@ import React, {useEffect} from 'react';
 import {AppNavigator} from './src/navigation/AppNavigator';
 import {callNotificationService} from './src/services/callNotificationService';
 import {initSiteConfigListener} from './src/services/siteConfigService';
+import {ensureDnsMapReady} from './src/utils/dnsMap';
 import {Toast} from './src/components/Toast';
+
+// Jaringan lapangan tidak punya server DNS, sehingga hostname internal
+// (chat.id / blm.id) tidak bisa di-resolve. Sama seperti aplikasi EXE, hostname
+// ditukar menjadi IP sebelum dipakai. Dimulai di sini — sebelum React sempat
+// merender — supaya balapan ke daftar master berjalan berbarengan dengan boot,
+// bukan menunda permintaan pertama. Lihat .claude/dns-map-plan.md
+ensureDnsMapReady();
 
 function App(): React.JSX.Element {
   // Initialize the native call-notification bridge once on startup.

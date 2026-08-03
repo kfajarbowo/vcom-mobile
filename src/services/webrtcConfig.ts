@@ -6,6 +6,7 @@ import { CallType } from '../store/callStore';
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resolveHostname } from '../utils/dnsMap';
 
 // Configurable TURN server defaults
 const TURN_USERNAME = 'test';
@@ -22,6 +23,10 @@ export const getIceServers = async () => {
   } catch (error) {
     console.error('Failed to get server host for WebRTC config:', error);
   }
+
+  // TURN dihubungi lewat IP juga: tanpa server DNS, `turn:chat.id:3478` tidak
+  // bisa di-resolve dan seluruh kandidat relay gagal terbentuk.
+  host = await resolveHostname(host);
 
   const turnServer = `${host}:3478`;
 

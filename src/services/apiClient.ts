@@ -6,6 +6,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFetchBlob from 'rn-fetch-blob';
 import { Platform, NativeModules } from 'react-native';
+import { resolveHostname } from '../utils/dnsMap';
 
 const { FileOpener } = NativeModules;
 
@@ -37,6 +38,11 @@ export const getApiBaseUrl = async (): Promise<string> => {
   } catch (error) {
     console.error('[API] Error reading server config from storage:', error);
   }
+
+  // Jaringan lapangan tidak punya server DNS, jadi hostname internal ditukar
+  // menjadi IP di sini — sebelum nilainya dipakai siapa pun. Host yang sudah
+  // berupa IP (dipilih user dari daftar site) tidak tersentuh.
+  host = await resolveHostname(host);
 
   console.log(`[API] Using server: ${protocol}://${host}:${port}`);
 

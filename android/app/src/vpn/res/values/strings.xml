@@ -1,0 +1,4 @@
+<resources>
+    <!-- Menimpa nilai di src/main untuk varian vpn saja. -->
+    <string name="app_name">VCOMM NXC VPN</string>
+</resources>
