@@ -163,7 +163,7 @@ export function CallManager() {
           case 'incoming_call': {
             console.log('[CallManager] Incoming 1-on-1 call received');
             const payload = message.payload || message;
-            const { callId, callType, fromUserId, fromUserName } = payload as any;
+            const { callId, callType, fromUserId, fromUserName, conversationId } = payload as any;
 
             console.log('[CallManager] Incoming call details:', {
               callId,
