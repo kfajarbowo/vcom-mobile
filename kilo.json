@@ -1,0 +1,19 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+
+  // Jaga konteks tetap kecil supaya hemat token/resource.
+  // prune memangkas output tool lama; auto merangkum saat konteks penuh.
+  "compaction": {
+    "auto": true,
+    "prune": true
+  },
+
+  // Batasi sumber pemborosan dan perilaku "aneh-aneh":
+  // web/subagent/direktori luar harus disetujui dulu.
+  "permission": {
+    "webfetch": "ask",
+    "websearch": "ask",
+    "task": "ask",
+    "external_directory": "ask"
+  }
+}

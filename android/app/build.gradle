@@ -83,8 +83,13 @@ android {
         applicationId = "com.vcommmobile"
         minSdkVersion = rootProject.ext.minSdkVersion
         targetSdkVersion = rootProject.ext.targetSdkVersion
-        versionCode = 1
-        versionName = "1.0"
+        // versionCode WAJIB naik tiap rilis. Selain penanda versi, angka inilah
+        // yang membuat Android mengizinkan APK baru menimpa APK yang sudah
+        // terpasang (mis. VCOMM-06-03-2026) tanpa uninstall — penting agar
+        // lisensi di app-private storage tidak hilang. versionName hanya
+        // penanda yang dibaca manusia.
+        versionCode = 2
+        versionName = "1.1"
     }
     signingConfigs {
         debug {
@@ -105,7 +110,13 @@ android {
             signingConfig = signingConfigs.debug
         }
         release {
-            signingConfig = signingConfigs.release
+            // Sengaja disign dengan debug.keystore (bukan signingConfigs.release)
+            // agar APK baru bisa menimpa APK lapangan (VCOMM-06-03-2026) tanpa
+            // uninstall, sehingga lisensi di app-private storage tidak hilang.
+            // Android mewajibkan signature APK baru sama dengan yang terpasang:
+            // kalau keystore diganti, update akan ditolak dan harus uninstall.
+            // Sinkron dengan versionCode yang terus naik (lihat defaultConfig).
+            signingConfig = signingConfigs.debug
             minifyEnabled = enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
