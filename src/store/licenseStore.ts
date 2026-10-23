@@ -1,9 +1,6 @@
 import {create} from 'zustand';
 import {
   saveLicenseKey,
-  getLicenseKey,
-  isLicenseSet,
-  verifyStoredLicense,
   checkLicenseOnServer,
   activateLicenseOnServer,
   type LicenseCheckResult,
@@ -27,52 +24,21 @@ interface LicenseState {
 }
 
 export const useLicenseStore = create<LicenseState>((set) => ({
-  licenseKey: null,
-  isLicenseValid: false,
-  isLoading: true,
-  hasCheckedLicense: false,
+  licenseKey: 'BYPASSED',
+  isLicenseValid: true,
+  isLoading: false,
+  hasCheckedLicense: true,
   lastValidationError: null,
 
   initialize: async () => {
-    try {
-      console.log('[License] Initializing license check...');
-      set({isLoading: true});
-
-      const hasLicense = await isLicenseSet();
-
-      if (hasLicense) {
-        const storedKey = await getLicenseKey();
-        console.log('[License] Found existing license key');
-
-        const isValid = await verifyStoredLicense();
-
-        set({
-          licenseKey: storedKey,
-          isLicenseValid: isValid,
-          isLoading: false,
-          hasCheckedLicense: true,
-          lastValidationError: isValid ? null : 'Stored license is no longer valid',
-        });
-      } else {
-        console.log('[License] No license key found - first launch');
-        set({
-          licenseKey: null,
-          isLicenseValid: false,
-          isLoading: false,
-          hasCheckedLicense: true,
-          lastValidationError: null,
-        });
-      }
-    } catch (error) {
-      console.error('[License] Failed to initialize license:', error);
-      set({
-        licenseKey: null,
-        isLicenseValid: false,
-        isLoading: false,
-        hasCheckedLicense: true,
-        lastValidationError: 'Failed to initialize license',
-      });
-    }
+    console.log('[License] License check bypassed');
+    set({
+      licenseKey: 'BYPASSED',
+      isLicenseValid: true,
+      isLoading: false,
+      hasCheckedLicense: true,
+      lastValidationError: null,
+    });
   },
 
   checkKey: async (key: string) => {

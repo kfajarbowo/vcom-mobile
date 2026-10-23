@@ -699,10 +699,10 @@ export class OneOnOneCallService {
           if (!params.encodings || params.encodings.length === 0) {
             params.encodings = [{}];
           }
-          params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps for clear 720p
-          params.encodings[0].maxFramerate = 30;
+          params.encodings[0].maxBitrate = 500000; // 500 kbps (optimized for tactical router / RUT200)
+          params.encodings[0].maxFramerate = 20;
           await sender.setParameters(params);
-          console.log('[WebRTC 1:1] ✅ Video bitrate boosted to 1.5 Mbps');
+          console.log('[WebRTC 1:1] ✅ Video bitrate optimized to 500 kbps (20 fps)');
         }
       }
     } catch (error) {

@@ -38,10 +38,15 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         const val REQUEST_CODE_FULLSCREEN = 3
 
         private var instance: CallNotificationModule? = null
+        @Volatile
+        private var pendingCallAction: WritableMap? = null
 
         fun getInstance(): CallNotificationModule? = instance
 
         fun emitEvent(eventName: String, params: WritableMap?) {
+            if (eventName == "onCallAction" && params != null) {
+                pendingCallAction = params
+            }
             instance?.sendEvent(eventName, params)
         }
     }
@@ -55,9 +60,13 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
     override fun getName(): String = "CallNotificationModule"
 
     private fun sendEvent(eventName: String, params: WritableMap?) {
-        reactApplicationContext
-            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            .emit(eventName, params)
+        try {
+            reactApplicationContext
+                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                .emit(eventName, params)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to emit event $eventName: ${e.message}")
+        }
     }
 
     private fun createNotificationChannel() {
@@ -463,6 +472,13 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)
         }
+    }
+
+    @ReactMethod
+    fun consumeInitialCallAction(promise: Promise) {
+        val action = pendingCallAction
+        pendingCallAction = null
+        promise.resolve(action)
     }
 
     @ReactMethod

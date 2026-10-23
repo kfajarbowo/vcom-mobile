@@ -32,14 +32,16 @@ export const getIceServers = async () => {
 
   return {
     iceServers: [
-      // Google's public STUN servers
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      // TURN server (dynamic)
+      // Internal STUN server from coturn (works directly over VPN/RUT200 without internet DNS)
+      { urls: `stun:${turnServer}` },
+      // Internal TURN server (dynamic)
       { urls: `turn:${turnServer}`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
       { urls: `turn:${turnServer}?transport=udp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
       { urls: `turn:${turnServer}?transport=tcp`, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      // Public Google STUN servers (effective when internet/DNS is available)
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
     ],
     iceTransportPolicy: 'all' as const,
     iceCandidatePoolSize: 10,
@@ -54,11 +56,13 @@ const AUDIO_CONSTRAINTS = {
   channelCount: { ideal: 1 },
 };
 
+// Video constraints optimized for tactical field networks & VPN routers (e.g. RUT200).
+// 640x480 at 20fps ensures smooth real-time video without packet drops or choking router buffers.
 const VIDEO_CONSTRAINTS = {
   facingMode: 'user',
-  width: 1280,
-  height: 720,
-  frameRate: 30,
+  width: { ideal: 640 },
+  height: { ideal: 480 },
+  frameRate: { ideal: 20, max: 24 },
 };
 
 // Media constraints for getUserMedia. `withVideo` lets callers fall back to audio-only when the

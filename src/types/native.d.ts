@@ -57,6 +57,11 @@ export interface CallNotificationModuleInterface {
   requestNotificationPermission(): Promise<'granted' | 'requested' | 'no_activity' | 'not_required'>;
 
   /**
+   * Consume any initial call action that launched the app before JS was ready
+   */
+  consumeInitialCallAction?(): Promise<CallActionEvent | null>;
+
+  /**
    * Check if notification permission is granted
    */
   checkNotificationPermission(): Promise<boolean>;

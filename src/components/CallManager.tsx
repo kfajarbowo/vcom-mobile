@@ -29,9 +29,25 @@ export function CallManager() {
         const matchesCurrent = !eventCallId || !callStore.callId || eventCallId === callStore.callId;
 
         if (event.action === 'accept') {
-          // If we have a pending call in ringing state, accept it
+          console.log('[CallManager] Accepting call from notification/native UI, current status:', callStore.status);
+
+          let offer = callStore.offer;
+          if (!offer && event.payload) {
+            try {
+              const payloadObj = JSON.parse(event.payload);
+              if (payloadObj.offer) {
+                console.log('[CallManager] Retrieved offer from event payload');
+                offer = payloadObj.offer;
+                callStore.setOffer(offer);
+              }
+            } catch (e) {
+              console.error('[CallManager] Failed to parse payload from event', e);
+            }
+          }
+
           if (callStore.status === 'ringing' && matchesCurrent) {
-            console.log('[CallManager] Accepting call from notification');
+            // Case A: Call was already ringing in store -> transition to calling and answer
+            console.log('[CallManager] Accepting ringing call from notification');
             callStore.setCallStatus('calling');
 
             if (callStore.isGroupCall) {
@@ -39,26 +55,6 @@ export function CallManager() {
               const participantIds = participants.map((p: any) => p.userId);
               await webrtcService.startGroupCall(participantIds);
             } else {
-              // Try to get offer from event payload (if passed from native) or store
-              let offer = callStore.offer;
-
-              if (!offer && event.payload) {
-                try {
-                  const payloadObj = JSON.parse(event.payload);
-                  if (payloadObj.offer) {
-                    console.log('[CallManager] Retrieved offer from event payload');
-                    offer = payloadObj.offer;
-                    // Update store with this offer so it's available
-                    callStore.setOffer(offer);
-                  }
-                } catch (e) {
-                  console.error('[CallManager] Failed to parse payload from event', e);
-                }
-              }
-
-              // The offer may still be in flight (the targeted webrtc_offer can lag the
-              // incoming_call, especially right after a background socket reconnect). Wait briefly
-              // for it before giving up.
               if (!offer) {
                 for (let i = 0; i < 20 && !offer; i++) {
                   await new Promise(resolve => setTimeout(resolve, 100));
@@ -71,10 +67,37 @@ export function CallManager() {
               } else {
                 console.error('[CallManager] Cannot answer call - no offer available');
                 toast.show('Call failed: No connection offer', 'error');
-                // Tell the server we could not take the call (rejectCall sends reject_call) so the
-                // caller stops ringing immediately, instead of a store-only reset that leaves the
-                // caller ringing until the 30s timeout.
                 webrtcService.rejectCall();
+              }
+            }
+          } else if (callStore.status === 'idle' || !matchesCurrent) {
+            // Case B: User already tapped Accept on native screen/notification, but React store is still idle.
+            // Immediately transition to 'calling' so IncomingCallModal will NEVER pop up to ask again.
+            console.log('[CallManager] Pre-emptively accepting incoming call into calling state');
+            callStore.receiveCall({
+              callId: eventCallId || '',
+              callType: (event.callType as any) || 'audio',
+              callerUserId: Number(event.callerId) || 0,
+              callerName: event.callerName || 'Unknown',
+              conversationId: 0,
+              offer: offer || null,
+            });
+            callStore.setCallStatus('calling');
+
+            if (!event.isGroupCall) {
+              if (!offer) {
+                // Wait for offer to arrive from WebSocket
+                for (let i = 0; i < 25 && !offer; i++) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  offer = useCallStore.getState().offer;
+                }
+              }
+
+              if (offer) {
+                console.log('[CallManager] Answering pre-accepted call with offer');
+                await webrtcService.answerCall((event.callType as any) || 'audio', offer);
+              } else {
+                console.warn('[CallManager] Offer not arrived yet for pre-accepted call, will answer upon webrtc_offer');
               }
             }
           }
@@ -177,6 +200,13 @@ export function CallManager() {
             // Ignore calls from ourselves
             if (fromUserId === currentUser?.id) {
               console.log('[CallManager] Ignoring incoming_call from self');
+              break;
+            }
+
+            // If this call was already accepted via native notification/screen (status is already 'calling'),
+            // do NOT downgrade back to 'ringing' so no modal is shown!
+            if (callStore.status === 'calling' && callStore.callId === callId) {
+              console.log('[CallManager] incoming_call arrived for already-accepted call; maintaining calling state');
               break;
             }
 
@@ -301,6 +331,14 @@ export function CallManager() {
                   callStore.reset();
                 }
               }, 35000); // 35 seconds (Android notification timeout is 30s)
+            } else if (callStore.status === 'calling' && callStore.callId === callId && !callStore.isGroupCall && callStore.isIncoming) {
+              // Offer arrived for an incoming call that was pre-accepted from native notification/screen
+              console.log('[CallManager] 🎯 Offer arrived for pre-accepted incoming call; answering now');
+              callStore.setOffer(offer);
+              if (callType) {
+                callStore.setCallType(callType);
+              }
+              await webrtcService.answerCall(callType || callStore.callType, offer);
             } else if ((callStore.status === 'active' || callStore.status === 'calling') && callStore.callId === callId && !callStore.isGroupCall) {
               // A second offer for the call we're already in = renegotiation (ICE restart, or the
               // peer enabling video mid-call). Apply it and answer without disturbing media.
@@ -463,7 +501,7 @@ export function CallManager() {
           case 'initiate_call': {
             // Only handle group call invitations here; 1:1 calls are handled by incoming_call
             const payload = message.payload || message;
-            const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, participants } = payload as any;
+            const { callId, callType, fromUserId, fromUserName, conversationId, isGroupCall, participants, groupName } = payload as any;
 
             console.log('[CallManager] Initiate call received:', {
               callId,

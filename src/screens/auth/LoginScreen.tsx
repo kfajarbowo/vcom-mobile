@@ -67,12 +67,6 @@ export function LoginScreen({ navigation }: Props) {
         const statuses = await checkAllSitesStatus(sites, parseInt(serverPort, 10) || 5000);
         setSiteStatuses(statuses);
 
-        // Auto-deselect if the currently selected site is offline
-        if (statuses[serverHost] === false) {
-          Alert.alert('Site Offline', `${serverHost} is unreachable. Reverting to default.`);
-          setServerHost('chat.id');
-        }
-
         setIsLoadingSites(false);
       };
       loadSites();
@@ -269,20 +263,20 @@ export function LoginScreen({ navigation }: Props) {
                 </TouchableOpacity>
               </View>
 
-              {(serverHost !== 'chat.id') && (
-                <View>
-                  {/* The "Dropdown" Trigger Button */}
-                  <TouchableOpacity
-                    style={styles.dropdownTrigger}
-                    onPress={() => setModalVisible(true)}
-                  >
-                    <Text style={styles.dropdownTriggerText}>
-                      {customSites.find(s => s.ip === serverHost)?.label || 'Select Site'}
-                    </Text>
-                    <Text style={{ color: '#999' }}>
-                      {isLoadingSites ? <ActivityIndicator size="small" color="#a6c455" /> : '▼'}
-                    </Text>
-                  </TouchableOpacity>
+              <View style={{ marginTop: 10 }}>
+                {/* The "Dropdown" Trigger Button */}
+                <Text style={styles.label}>SELECT SITE</Text>
+                <TouchableOpacity
+                  style={styles.dropdownTrigger}
+                  onPress={() => setModalVisible(true)}
+                >
+                  <Text style={styles.dropdownTriggerText}>
+                    {customSites.find(s => s.ip === serverHost)?.label || (serverHost === 'chat.id' ? 'Default (chat.id)' : serverHost || 'Select Site')}
+                  </Text>
+                  <Text style={{ color: '#999' }}>
+                    {isLoadingSites ? <ActivityIndicator size="small" color="#a6c455" /> : '▼'}
+                  </Text>
+                </TouchableOpacity>
 
                   <Modal visible={isModalVisible} transparent animationType="fade">
                     <TouchableOpacity
@@ -319,11 +313,6 @@ export function LoginScreen({ navigation }: Props) {
                                 serverHost === item.ip && styles.quickSelectSiteButtonActive,
                               ]}
                               onPress={() => {
-                                if (status === false) {
-                                  Alert.alert('Site Offline', `${item.label} (${item.ip}) is currently unreachable. Please select a different site.`);
-                                  return;
-                                }
-                                // Prefer the chatIp for login
                                 setServerHost(item.ip);
                                 setServerPort('5000');
                                 setModalVisible(false);
@@ -364,7 +353,6 @@ export function LoginScreen({ navigation }: Props) {
                     </TouchableOpacity>
                   </Modal>
                 </View>
-              )}
             </View>
 
             <View style={styles.fieldContainer}>

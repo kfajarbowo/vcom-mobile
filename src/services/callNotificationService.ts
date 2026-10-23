@@ -81,6 +81,15 @@ class CallNotificationService {
 
       this.isInitialized = true;
       console.log('[CallNotificationService] Initialized successfully');
+
+      // Check for any call action that launched the app from native UI (e.g. IncomingCallActivity accept)
+      this.consumeInitialCallAction().then((initialAction) => {
+        if (initialAction) {
+          console.log('[CallNotificationService] Found initial call action:', initialAction);
+          this.initialCallAction = initialAction;
+          this.callActionCallbacks.forEach(callback => callback(initialAction));
+        }
+      });
     } catch (error) {
       console.error('[CallNotificationService] Initialization error:', error);
     }
@@ -329,11 +338,34 @@ class CallNotificationService {
     }
   }
 
+  private initialCallAction: CallActionEvent | null = null;
+
+  /**
+   * Consume any initial call action that launched the app before JS was ready
+   */
+  async consumeInitialCallAction(): Promise<CallActionEvent | null> {
+    try {
+      if (CallNotificationNative && typeof CallNotificationNative.consumeInitialCallAction === 'function') {
+        const action = await CallNotificationNative.consumeInitialCallAction();
+        return action || null;
+      }
+      return null;
+    } catch (error) {
+      console.warn('[CallNotificationService] Failed to consume initial call action:', error);
+      return null;
+    }
+  }
+
   /**
    * Add listener for call action events (accept/reject/missed)
    */
   addCallActionListener(callback: CallActionCallback): () => void {
     this.callActionCallbacks.add(callback);
+    if (this.initialCallAction) {
+      const action = this.initialCallAction;
+      this.initialCallAction = null;
+      setTimeout(() => callback(action), 50);
+    }
     return () => {
       this.callActionCallbacks.delete(callback);
     };
