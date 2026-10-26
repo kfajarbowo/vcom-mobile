@@ -347,21 +347,21 @@ export function SettingsScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <View style={{ marginTop: 10 }}>
-                  <Text style={styles.inputLabel}>SELECT SITE</Text>
-                  <TouchableOpacity
-                    style={styles.dropdownTrigger}
-                    onPress={() => setModalVisible(true)}
-                  >
-                    <Text style={styles.dropdownTriggerText}>
-                      {customSites.find(s => s.ip === serverHost)?.label || (serverHost === 'chat.id' ? 'Default (chat.id)' : serverHost || 'Select Site')}
-                    </Text>
-                    <Text style={{ color: '#999' }}>
-                      {isLoadingSites ? <ActivityIndicator size="small" color="#a6c455" /> : '▼'}
-                    </Text>
-                  </TouchableOpacity>
+                {serverHost !== 'chat.id' && serverHost !== '172.20.10.5' && (
+                  <View>
+                    <TouchableOpacity
+                      style={styles.dropdownTrigger}
+                      onPress={() => setModalVisible(true)}
+                    >
+                      <Text style={styles.dropdownTriggerText}>
+                        {customSites.find(s => s.ip === serverHost)?.label || (serverHost ? serverHost : 'Select Site')}
+                      </Text>
+                      <Text style={{ color: '#999' }}>
+                        {isLoadingSites ? <ActivityIndicator size="small" color="#a6c455" /> : '▼'}
+                      </Text>
+                    </TouchableOpacity>
 
-                  <Modal visible={isModalVisible} transparent animationType="fade">
+                    <Modal visible={isModalVisible} transparent animationType="fade">
                       <TouchableOpacity
                         style={styles.modalOverlay}
                         activeOpacity={1}
@@ -391,11 +391,17 @@ export function SettingsScreen() {
                               const status = siteStatuses[item.ip];
                               return (
                               <TouchableOpacity
+                                disabled={status === false}
                                 style={[
                                   styles.quickSelectSiteButton,
                                   serverHost === item.ip && styles.quickSelectSiteButtonActive,
+                                  status === false && { opacity: 0.5 },
                                 ]}
                                 onPress={() => {
+                                  if (status === false) {
+                                    Alert.alert('Site Offline', `${item.label} (${item.ip}) is currently unreachable. Please select a different site.`);
+                                    return;
+                                  }
                                   setServerHost(item.ip);
                                   setServerPort('5000');
                                   setModalVisible(false);
@@ -435,7 +441,8 @@ export function SettingsScreen() {
                         </View>
                       </TouchableOpacity>
                     </Modal>
-                </View>
+                  </View>
+                )}
               </View>
 
               <View style={styles.inputContainer}>

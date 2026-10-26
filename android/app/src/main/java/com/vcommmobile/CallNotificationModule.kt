@@ -39,13 +39,17 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
 
         private var instance: CallNotificationModule? = null
         @Volatile
-        private var pendingCallAction: WritableMap? = null
+        private var pendingCallAction: Bundle? = null
 
         fun getInstance(): CallNotificationModule? = instance
 
         fun emitEvent(eventName: String, params: WritableMap?) {
             if (eventName == "onCallAction" && params != null) {
-                pendingCallAction = params
+                try {
+                    pendingCallAction = Arguments.toBundle(params)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to copy call action to bundle: " + e.message)
+                }
             }
             instance?.sendEvent(eventName, params)
         }
@@ -476,9 +480,18 @@ class CallNotificationModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun consumeInitialCallAction(promise: Promise) {
-        val action = pendingCallAction
-        pendingCallAction = null
-        promise.resolve(action)
+        try {
+            val bundle = pendingCallAction
+            pendingCallAction = null
+            if (bundle != null) {
+                promise.resolve(Arguments.fromBundle(bundle))
+            } else {
+                promise.resolve(null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve initial call action: " + e.message)
+            promise.resolve(null)
+        }
     }
 
     @ReactMethod
