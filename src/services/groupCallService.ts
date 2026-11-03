@@ -36,19 +36,20 @@ export class GroupCallService {
 
   // Initialize peer connection for a specific participant
   async initializeGroupPeerConnection(participantUserId: number): Promise<any> {
-    console.log('[WebRTC Group] Initializing peer connection for participant:', participantUserId);
+    const participantId = Number(participantUserId);
+    console.log('[WebRTC Group] Initializing peer connection for participant:', participantId);
 
     // Clean up any existing peer connection for this participant
-    if (this.groupPeerConnections.has(participantUserId)) {
+    if (this.groupPeerConnections.has(participantId)) {
       console.log('[WebRTC Group] Cleaning up existing peer connection');
-      this.groupPeerConnections.get(participantUserId)?.close();
-      this.groupPeerConnections.delete(participantUserId);
+      this.groupPeerConnections.get(participantId)?.close();
+      this.groupPeerConnections.delete(participantId);
     }
 
     // Initialize or get existing stream for this participant
-    if (!this.participantStreams.has(participantUserId)) {
-      this.participantStreams.set(participantUserId, new MediaStream());
-      console.log('[WebRTC Group] Created new MediaStream for participant:', participantUserId);
+    if (!this.participantStreams.has(participantId)) {
+      this.participantStreams.set(participantId, new MediaStream());
+      console.log('[WebRTC Group] Created new MediaStream for participant:', participantId);
     }
 
     const iceServers = await getIceServers();
@@ -56,7 +57,7 @@ export class GroupCallService {
 
     // Add transceivers upfront to ensure consistent SDP structure across all connections
     // This prevents issues where different peer connections might have different m-line orders
-    console.log('[WebRTC Group] Adding transceivers for participant:', participantUserId);
+    console.log('[WebRTC Group] Adding transceivers for participant:', participantId);
 
     // Add audio transceiver with sendrecv direction
     const audioTransceiver = peerConnection.addTransceiver('audio', {
@@ -73,29 +74,48 @@ export class GroupCallService {
     // Handle ICE candidates
     (peerConnection as any).onicecandidate = (event: any) => {
       if (event.candidate) {
-        console.log('[WebRTC Group] ICE candidate generated for participant:', participantUserId);
+        console.log('[WebRTC Group] ICE candidate generated for participant:', participantId);
         const callState = useCallStore.getState();
         if (callState.callId) {
+          const myId = Number(useAuthStore.getState().user?.id);
+          const callId = callState.callId;
+
+          const candidateData = {
+            candidate: event.candidate.candidate,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            sdpMid: event.candidate.sdpMid,
+          };
+
           websocketService.send({
             type: 'group_webrtc_ice_candidate',
+            callId,
+            call_id: callId,
+            targetUserId: participantId,
+            toUserId: participantId,
+            to_user_id: participantId,
+            recipientId: participantId,
+            fromUserId: myId,
+            from_user_id: myId,
+            candidate: candidateData,
             payload: {
-              callId: callState.callId,
-              targetUserId: participantUserId,
-              fromUserId: useAuthStore.getState().user?.id,
-              candidate: {
-                candidate: event.candidate.candidate,
-                sdpMLineIndex: event.candidate.sdpMLineIndex,
-                sdpMid: event.candidate.sdpMid,
-              },
+              callId,
+              call_id: callId,
+              targetUserId: participantId,
+              toUserId: participantId,
+              to_user_id: participantId,
+              recipientId: participantId,
+              fromUserId: myId,
+              from_user_id: myId,
+              candidate: candidateData,
             },
-          });
+          } as any);
         }
       }
     };
 
     // Handle remote stream
     (peerConnection as any).ontrack = (event: any) => {
-      console.log('[WebRTC Group] Remote track received from participant:', participantUserId);
+      console.log('[WebRTC Group] Remote track received from participant:', participantId);
       console.log('[WebRTC Group] Track details:', {
         kind: event.track.kind,
         id: event.track.id,
@@ -107,72 +127,92 @@ export class GroupCallService {
       // Handle track mute/unmute events for video
       if (event.track.kind === 'video') {
         const initialState = event.track.enabled && !event.track.muted;
-        useCallStore.getState().updateParticipantVideo(participantUserId, initialState);
+        useCallStore.getState().updateParticipantVideo(participantId, initialState);
 
         event.track.onmute = () => {
-          console.log('[WebRTC Group] Remote video track muted for participant:', participantUserId);
-          useCallStore.getState().updateParticipantVideo(participantUserId, false);
+          console.log('[WebRTC Group] Remote video track muted for participant:', participantId);
+          useCallStore.getState().updateParticipantVideo(participantId, false);
         };
 
         event.track.onunmute = () => {
-          console.log('[WebRTC Group] Remote video track unmuted for participant:', participantUserId);
-          useCallStore.getState().updateParticipantVideo(participantUserId, true);
+          console.log('[WebRTC Group] Remote video track unmuted for participant:', participantId);
+          useCallStore.getState().updateParticipantVideo(participantId, true);
         };
 
         event.track.onended = () => {
-          console.log('[WebRTC Group] Remote video track ended for participant:', participantUserId);
-          useCallStore.getState().updateParticipantVideo(participantUserId, false);
+          console.log('[WebRTC Group] Remote video track ended for participant:', participantId);
+          useCallStore.getState().updateParticipantVideo(participantId, false);
         };
       }
 
       // Always use our participant streams map to avoid stream object replacement (#6)
-      let remoteStream = this.participantStreams.get(participantUserId);
+      let remoteStream = this.participantStreams.get(participantId);
       if (!remoteStream) {
         remoteStream = new MediaStream();
-        this.participantStreams.set(participantUserId, remoteStream);
+        this.participantStreams.set(participantId, remoteStream);
       }
 
       // Add track to existing stream (don't replace the stream object)
       const existingTrack = remoteStream.getTracks().find(t => t.id === event.track.id);
       if (!existingTrack) {
         remoteStream.addTrack(event.track);
-        console.log('[WebRTC Group] Added', event.track.kind, 'track to stream for participant:', participantUserId);
+        console.log('[WebRTC Group] Added', event.track.kind, 'track to stream for participant:', participantId);
       } else {
-        console.log('[WebRTC Group] Track already exists in stream for participant:', participantUserId);
+        console.log('[WebRTC Group] Track already exists in stream for participant:', participantId);
       }
 
-      console.log('[WebRTC Group] Setting remote stream for participant:', participantUserId);
+      console.log('[WebRTC Group] Setting remote stream for participant:', participantId);
       console.log('[WebRTC Group] Remote stream has', remoteStream.getAudioTracks().length, 'audio tracks and', remoteStream.getVideoTracks().length, 'video tracks');
       console.log('[WebRTC Group] Stream ID:', remoteStream.id, 'Active:', remoteStream.active);
 
       // Update the stream in call store
-      useCallStore.getState().updateParticipantStream(participantUserId, remoteStream);
+      useCallStore.getState().updateParticipantStream(participantId, remoteStream);
+
+      // Update call status to active when first track is received if still calling
+      const currentStatus = useCallStore.getState().status;
+      if (currentStatus === 'calling') {
+        console.log('[WebRTC Group] ✅ Track received while calling - transitioning status to active');
+        useCallStore.getState().setCallStatus('active');
+      }
+    };
+
+    // Monitor connection state
+    (peerConnection as any).onconnectionstatechange = () => {
+      const connState = peerConnection.connectionState;
+      console.log(`[WebRTC Group] Connection state with ${participantId}:`, connState);
+      if (connState === 'connected') {
+        const currentStatus = useCallStore.getState().status;
+        if (currentStatus === 'calling') {
+          console.log('[WebRTC Group] ✅ Connection established - setting call status to active');
+          useCallStore.getState().setCallStatus('active');
+        }
+      }
     };
 
     // Monitor ICE connection state
     (peerConnection as any).oniceconnectionstatechange = () => {
       const timestamp = new Date().toISOString();
-      console.log(`[WebRTC Group] [${timestamp}] ICE connection state for participant ${participantUserId}:`, peerConnection.iceConnectionState);
+      console.log(`[WebRTC Group] [${timestamp}] ICE connection state for participant ${participantId}:`, peerConnection.iceConnectionState);
 
       if (peerConnection.iceConnectionState === 'failed') {
-        console.error(`[WebRTC Group] ❌ [${timestamp}] ICE connection FAILED with participant:`, participantUserId);
-        this.attemptGroupIceRecovery(participantUserId);
+        console.error(`[WebRTC Group] ❌ [${timestamp}] ICE connection FAILED with participant:`, participantId);
+        this.attemptGroupIceRecovery(participantId);
       } else if (peerConnection.iceConnectionState === 'disconnected') {
-        console.warn(`[WebRTC Group] ⚠️ [${timestamp}] ICE connection DISCONNECTED with participant:`, participantUserId);
+        console.warn(`[WebRTC Group] ⚠️ [${timestamp}] ICE connection DISCONNECTED with participant:`, participantId);
         // Give it a grace window; if still down, attempt recovery.
         setTimeout(() => {
-          const pc = this.groupPeerConnections.get(participantUserId);
+          const pc = this.groupPeerConnections.get(participantId);
           if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
-            this.attemptGroupIceRecovery(participantUserId);
+            this.attemptGroupIceRecovery(participantId);
           }
         }, 6000);
       } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-        this.groupIceRestartAttempts.delete(participantUserId);
+        this.groupIceRestartAttempts.delete(participantId);
       }
       if (peerConnection.iceConnectionState === 'checking') {
-        console.log(`[WebRTC Group] 🔍 [${timestamp}] ICE checking connectivity with participant:`, participantUserId);
+        console.log(`[WebRTC Group] 🔍 [${timestamp}] ICE checking connectivity with participant:`, participantId);
       } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-        console.log(`[WebRTC Group] ✅ [${timestamp}] ICE connection established with participant:`, participantUserId);
+        console.log(`[WebRTC Group] ✅ [${timestamp}] ICE connection established with participant:`, participantId);
         // Update call status to active when first connection is established
         const currentStatus = useCallStore.getState().status;
         if (currentStatus === 'calling') {
@@ -182,7 +222,7 @@ export class GroupCallService {
       }
     };
 
-    this.groupPeerConnections.set(participantUserId, peerConnection);
+    this.groupPeerConnections.set(participantId, peerConnection);
     return peerConnection;
   }
 
@@ -288,17 +328,36 @@ export class GroupCallService {
       console.log('[WebRTC Group] ✅ Got user media, stream ID:', stream.id);
 
       // Join the group call via WebSocket
+      const myId = Number(currentUser?.id);
+      const callId = callState.callId;
+      const convId = callState.conversationId;
       const joinMessage = {
         type: 'join_group_call',
+        callId,
+        call_id: callId,
+        groupId: convId,
+        group_id: convId,
+        conversationId: convId,
+        conversation_id: convId,
+        fromUserId: myId,
+        from_user_id: myId,
+        userId: myId,
+        user_id: myId,
         payload: {
-          callId: callState.callId,
-          groupId: callState.conversationId,
-          conversationId: callState.conversationId,
-          fromUserId: currentUser?.id,
+          callId,
+          call_id: callId,
+          groupId: convId,
+          group_id: convId,
+          conversationId: convId,
+          conversation_id: convId,
+          fromUserId: myId,
+          from_user_id: myId,
+          userId: myId,
+          user_id: myId,
         },
       };
       console.log('[WebRTC Group] Sending join_group_call:', joinMessage);
-      websocketService.send(joinMessage);
+      websocketService.send(joinMessage as any);
 
       console.log('[WebRTC Group] ✅ Successfully sent join_group_call message');
     } catch (error) {
@@ -336,18 +395,19 @@ export class GroupCallService {
   // Create offer for a specific participant
   async createGroupOffer(participantUserId: number): Promise<void> {
     try {
-      console.log('[WebRTC Group] Creating offer for participant:', participantUserId);
+      const targetId = Number(participantUserId);
+      console.log('[WebRTC Group] Creating offer for participant:', targetId);
 
       const localStream = await this.waitForLocalStream();
       if (!localStream) {
-        console.error('[WebRTC Group] ❌ Local stream not available, cannot create offer for:', participantUserId);
+        console.error('[WebRTC Group] ❌ Local stream not available, cannot create offer for:', targetId);
         return;
       }
 
-      const peerConnection = await this.initializeGroupPeerConnection(participantUserId);
+      const peerConnection = await this.initializeGroupPeerConnection(targetId);
 
       const isCurrentConnection = () => {
-        return this.groupPeerConnections.get(participantUserId) === peerConnection;
+        return this.groupPeerConnections.get(targetId) === peerConnection;
       };
 
       if ((peerConnection.signalingState as any) === 'closed' || !isCurrentConnection()) {
@@ -356,7 +416,7 @@ export class GroupCallService {
       }
 
       // Add local stream to peer connection using transceivers
-      console.log('[WebRTC Group] Setting local tracks to transceivers for:', participantUserId);
+      console.log('[WebRTC Group] Setting local tracks to transceivers for:', targetId);
 
       const transceivers = peerConnection.getTransceivers();
       console.log('[WebRTC Group] Available transceivers:', transceivers.length);
@@ -405,7 +465,6 @@ export class GroupCallService {
       console.log('[WebRTC Group] Creating offer, current state:', peerConnection.signalingState);
 
       // Always request both audio and video transceivers to prevent mismatch issues
-      // even if the call is audio-only, this ensures consistent SDP structure
       const offer = await peerConnection.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
@@ -426,21 +485,39 @@ export class GroupCallService {
 
       const callState = useCallStore.getState();
       const user = useAuthStore.getState().user;
+      const myId = Number(user?.id);
+      const currentCallId = callState.callId;
+
+      const offerData = {
+        type: offer.type,
+        sdp: offer.sdp,
+      };
 
       websocketService.send({
         type: 'group_webrtc_offer',
+        callId: currentCallId,
+        call_id: currentCallId,
+        targetUserId: targetId,
+        toUserId: targetId,
+        to_user_id: targetId,
+        recipientId: targetId,
+        fromUserId: myId,
+        from_user_id: myId,
+        offer: offerData,
         payload: {
-          callId: callState.callId,
-          targetUserId: participantUserId,
-          fromUserId: user?.id,
-          offer: {
-            type: offer.type,
-            sdp: offer.sdp,
-          },
+          callId: currentCallId,
+          call_id: currentCallId,
+          targetUserId: targetId,
+          toUserId: targetId,
+          to_user_id: targetId,
+          recipientId: targetId,
+          fromUserId: myId,
+          from_user_id: myId,
+          offer: offerData,
         },
-      });
+      } as any);
 
-      console.log('[WebRTC Group] Sent offer to participant:', participantUserId);
+      console.log('[WebRTC Group] Sent offer to participant:', targetId);
     } catch (error) {
       console.error('[WebRTC Group] Error creating offer for participant:', participantUserId, error);
     }
@@ -452,122 +529,159 @@ export class GroupCallService {
   // then we add local tracks via addTrack which attaches to existing transceivers.
   async handleGroupOffer(fromUserId: number, offer: RTCSessionDescription): Promise<void> {
     try {
-      console.log('[WebRTC Group] Handling offer from participant:', fromUserId);
+      const fromId = Number(fromUserId);
+      console.log('[WebRTC Group] Handling offer from participant:', fromId);
 
-      const currentUserId = useAuthStore.getState().user?.id;
+      const currentUserId = Number(useAuthStore.getState().user?.id);
 
-      if (fromUserId === currentUserId) {
+      if (fromId === currentUserId) {
         console.log('[WebRTC Group] Ignoring offer from self');
         return;
       }
 
       const localStream = await this.waitForLocalStream();
       if (!localStream) {
-        console.error('[WebRTC Group] ❌ Local stream not available, cannot handle offer from:', fromUserId);
+        console.error('[WebRTC Group] ❌ Local stream not available, cannot handle offer from:', fromId);
         return;
       }
 
-      const existingPeerConnection = this.groupPeerConnections.get(fromUserId);
+      const existingPeerConnection = this.groupPeerConnections.get(fromId);
 
       // Implement polite peer pattern to handle glare
       if (existingPeerConnection && existingPeerConnection.signalingState !== 'stable') {
-        const isPolite = currentUserId! < fromUserId;
-        console.log('[WebRTC Group] Glare detected with participant:', fromUserId, 'isPolite:', isPolite, 'state:', existingPeerConnection.signalingState);
+        const isPolite = currentUserId < fromId;
+        console.log('[WebRTC Group] Glare detected with participant:', fromId, 'isPolite:', isPolite, 'state:', existingPeerConnection.signalingState);
 
         if (!isPolite) {
-          console.log('[WebRTC Group] ⏭️ Ignoring offer from participant (impolite peer):', fromUserId);
+          console.log('[WebRTC Group] ⏭️ Ignoring offer from participant (impolite peer):', fromId);
           return;
         } else {
           console.log('[WebRTC Group] ♻️ Accepting offer from participant (polite peer), closing old connection');
           existingPeerConnection.close();
-          this.groupPeerConnections.delete(fromUserId);
+          this.groupPeerConnections.delete(fromId);
         }
       } else if (existingPeerConnection && existingPeerConnection.signalingState === 'stable') {
-        console.log('[WebRTC Group] ✅ Connection already stable with participant:', fromUserId, '- accepting renegotiation');
+        console.log('[WebRTC Group] ✅ Connection already stable with participant:', fromId, '- accepting renegotiation');
         existingPeerConnection.close();
-        this.groupPeerConnections.delete(fromUserId);
+        this.groupPeerConnections.delete(fromId);
       }
 
       // Create peer connection WITHOUT pre-creating transceivers (answerer mode).
       // setRemoteDescription will create transceivers from the offer's m-lines.
-      console.log('[WebRTC Group] Creating answerer peer connection for:', fromUserId);
+      console.log('[WebRTC Group] Creating answerer peer connection for:', fromId);
 
       // Clean up existing participant stream
-      if (!this.participantStreams.has(fromUserId)) {
-        this.participantStreams.set(fromUserId, new MediaStream());
+      if (!this.participantStreams.has(fromId)) {
+        this.participantStreams.set(fromId, new MediaStream());
       }
 
       const iceServers = await getIceServers();
       const peerConnection = new RTCPeerConnection(iceServers as any);
 
-      // Set up event handlers (same as initializeGroupPeerConnection but no addTransceiver)
+      // Set up event handlers
       (peerConnection as any).onicecandidate = (event: any) => {
         if (event.candidate) {
           const callState = useCallStore.getState();
           if (callState.callId) {
+            const callId = callState.callId;
+            const candidateData = {
+              candidate: event.candidate.candidate,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              sdpMid: event.candidate.sdpMid,
+            };
+
             websocketService.send({
               type: 'group_webrtc_ice_candidate',
+              callId,
+              call_id: callId,
+              targetUserId: fromId,
+              toUserId: fromId,
+              to_user_id: fromId,
+              recipientId: fromId,
+              fromUserId: currentUserId,
+              from_user_id: currentUserId,
+              candidate: candidateData,
               payload: {
-                callId: callState.callId,
-                targetUserId: fromUserId,
-                fromUserId: useAuthStore.getState().user?.id,
-                candidate: {
-                  candidate: event.candidate.candidate,
-                  sdpMLineIndex: event.candidate.sdpMLineIndex,
-                  sdpMid: event.candidate.sdpMid,
-                },
+                callId,
+                call_id: callId,
+                targetUserId: fromId,
+                toUserId: fromId,
+                to_user_id: fromId,
+                recipientId: fromId,
+                fromUserId: currentUserId,
+                from_user_id: currentUserId,
+                candidate: candidateData,
               },
-            });
+            } as any);
           }
         }
       };
 
       (peerConnection as any).ontrack = (event: any) => {
-        console.log('[WebRTC Group] Remote track received from participant:', fromUserId, event.track.kind);
+        console.log('[WebRTC Group] Remote track received from participant:', fromId, event.track.kind);
 
         if (event.track.kind === 'video') {
           const initialState = event.track.enabled && !event.track.muted;
-          useCallStore.getState().updateParticipantVideo(fromUserId, initialState);
-          event.track.onmute = () => useCallStore.getState().updateParticipantVideo(fromUserId, false);
-          event.track.onunmute = () => useCallStore.getState().updateParticipantVideo(fromUserId, true);
-          event.track.onended = () => useCallStore.getState().updateParticipantVideo(fromUserId, false);
+          useCallStore.getState().updateParticipantVideo(fromId, initialState);
+          event.track.onmute = () => useCallStore.getState().updateParticipantVideo(fromId, false);
+          event.track.onunmute = () => useCallStore.getState().updateParticipantVideo(fromId, true);
+          event.track.onended = () => useCallStore.getState().updateParticipantVideo(fromId, false);
         }
 
-        let remoteStream = this.participantStreams.get(fromUserId);
+        let remoteStream = this.participantStreams.get(fromId);
         if (!remoteStream) {
           remoteStream = new MediaStream();
-          this.participantStreams.set(fromUserId, remoteStream);
+          this.participantStreams.set(fromId, remoteStream);
         }
         const existingTrack = remoteStream.getTracks().find(t => t.id === event.track.id);
         if (!existingTrack) {
           remoteStream.addTrack(event.track);
-          console.log('[WebRTC Group] Added', event.track.kind, 'track to stream for:', fromUserId);
+          console.log('[WebRTC Group] Added', event.track.kind, 'track to stream for:', fromId);
         }
         console.log('[WebRTC Group] Stream now has', remoteStream.getAudioTracks().length, 'audio,', remoteStream.getVideoTracks().length, 'video tracks');
-        useCallStore.getState().updateParticipantStream(fromUserId, remoteStream);
+        useCallStore.getState().updateParticipantStream(fromId, remoteStream);
+
+        // Transition status to active when track arrives
+        const currentStatus = useCallStore.getState().status;
+        if (currentStatus === 'calling') {
+          console.log('[WebRTC Group] ✅ Track received while calling - transitioning to active');
+          useCallStore.getState().setCallStatus('active');
+        }
+      };
+
+      (peerConnection as any).onconnectionstatechange = () => {
+        const connState = peerConnection.connectionState;
+        console.log(`[WebRTC Group] Connection state with ${fromId}:`, connState);
+        if (connState === 'connected') {
+          const currentStatus = useCallStore.getState().status;
+          if (currentStatus === 'calling') {
+            console.log('[WebRTC Group] ✅ Connection established - setting call status to active');
+            useCallStore.getState().setCallStatus('active');
+          }
+        }
       };
 
       (peerConnection as any).oniceconnectionstatechange = () => {
-        console.log(`[WebRTC Group] ICE state for ${fromUserId}:`, peerConnection.iceConnectionState);
+        console.log(`[WebRTC Group] ICE state for ${fromId}:`, peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-          this.groupIceRestartAttempts.delete(fromUserId);
+          this.groupIceRestartAttempts.delete(fromId);
           const currentStatus = useCallStore.getState().status;
           if (currentStatus === 'calling') {
             useCallStore.getState().setCallStatus('active');
           }
         } else if (peerConnection.iceConnectionState === 'failed') {
-          this.attemptGroupIceRecovery(fromUserId);
+          this.attemptGroupIceRecovery(fromId);
         } else if (peerConnection.iceConnectionState === 'disconnected') {
           setTimeout(() => {
-            const pc = this.groupPeerConnections.get(fromUserId);
+            const pc = this.groupPeerConnections.get(fromId);
             if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
-              this.attemptGroupIceRecovery(fromUserId);
+              this.attemptGroupIceRecovery(fromId);
             }
           }, 6000);
         }
       };
 
-      this.groupPeerConnections.set(fromUserId, peerConnection);
+      this.groupPeerConnections.set(fromId, peerConnection);
 
       // Step 1: Set remote description FIRST — this creates transceivers from the offer's m-lines
       try {
@@ -610,23 +724,51 @@ export class GroupCallService {
       this.applyVideoBitrateConstraints(peerConnection);
 
       const callState = useCallStore.getState();
+      const currentCallId = callState.callId;
+
+      const answerData = {
+        type: answer.type,
+        sdp: answer.sdp,
+      };
 
       websocketService.send({
         type: 'group_webrtc_answer',
+        callId: currentCallId,
+        call_id: currentCallId,
+        targetUserId: fromId,
+        toUserId: fromId,
+        to_user_id: fromId,
+        recipientId: fromId,
+        fromUserId: currentUserId,
+        from_user_id: currentUserId,
+        answer: answerData,
+        sdp: answer.sdp,
         payload: {
-          callId: callState.callId,
-          targetUserId: fromUserId,
+          callId: currentCallId,
+          call_id: currentCallId,
+          targetUserId: fromId,
+          toUserId: fromId,
+          to_user_id: fromId,
+          recipientId: fromId,
           fromUserId: currentUserId,
-          answer: {
-            type: answer.type,
-            sdp: answer.sdp,
-          },
+          from_user_id: currentUserId,
+          answer: answerData,
+          sdp: answer.sdp,
         },
-      });
+      } as any);
 
-      console.log('[WebRTC Group] ✅ Sent answer to participant:', fromUserId);
+      console.log('[WebRTC Group] ✅ Sent answer to participant:', fromId);
 
-      this.addGroupPendingIceCandidates(fromUserId);
+      await this.addGroupPendingIceCandidates(fromId);
+
+      // Safety fallback timer: auto-transition ke active setelah 2.5s jika masih calling
+      setTimeout(() => {
+        const checkState = useCallStore.getState();
+        if (checkState.callId === currentCallId && checkState.status === 'calling') {
+          console.log('[WebRTC Group] ⏱️ Answer safety timer: auto-transitioning to active');
+          useCallStore.getState().setCallStatus('active');
+        }
+      }, 2500);
     } catch (error) {
       console.error('[WebRTC Group] Error handling offer from participant:', fromUserId, error);
     }
@@ -635,17 +777,18 @@ export class GroupCallService {
   // Handle group answer from another participant
   async handleGroupAnswer(fromUserId: number, answer: RTCSessionDescription): Promise<void> {
     try {
-      console.log('[WebRTC Group] Handling answer from participant:', fromUserId);
+      const fromId = Number(fromUserId);
+      console.log('[WebRTC Group] Handling answer from participant:', fromId);
 
-      const peerConnection = this.groupPeerConnections.get(fromUserId);
+      const peerConnection = this.groupPeerConnections.get(fromId);
       if (!peerConnection) {
-        console.error('[WebRTC Group] No peer connection exists for participant:', fromUserId);
+        console.error('[WebRTC Group] No peer connection exists for participant:', fromId);
         return;
       }
 
       // Check if connection is closed (may have been replaced during glare)
       if ((peerConnection.signalingState as string) === 'closed') {
-        console.warn('[WebRTC Group] ⚠️ Peer connection is closed, ignoring stale answer from:', fromUserId);
+        console.warn('[WebRTC Group] ⚠️ Peer connection is closed, ignoring stale answer from:', fromId);
         return;
       }
 
@@ -666,35 +809,35 @@ export class GroupCallService {
 
       if (hasInvalidTransceivers) {
         console.warn('[WebRTC Group] ⚠️ Invalid transceivers detected, connection may have been replaced during glare');
-        console.warn('[WebRTC Group] Recreating connection and sending new offer to:', fromUserId);
+        console.warn('[WebRTC Group] Recreating connection and sending new offer to:', fromId);
         // Recreate the connection - this will trigger a new offer
-        await this.createGroupOffer(fromUserId);
+        await this.createGroupOffer(fromId);
         return;
       }
 
       if (peerConnection.signalingState === 'have-local-offer') {
         try {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log('[WebRTC Group] ✅ Remote description set for participant:', fromUserId);
+          console.log('[WebRTC Group] ✅ Remote description set for participant:', fromId);
           console.log('[WebRTC Group] Transceivers after setting answer:', peerConnection.getTransceivers().length);
 
-          this.addGroupPendingIceCandidates(fromUserId);
+          await this.addGroupPendingIceCandidates(fromId);
         } catch (setRemoteError: any) {
           console.error('[WebRTC Group] ❌ Error setting remote description (answer):', setRemoteError);
 
           // Handle transceiver/receiver errors by recreating the connection
           if (setRemoteError?.message?.includes('receiver') || setRemoteError?.message?.includes('transceiver')) {
-            console.warn('[WebRTC Group] ⚠️ Transceiver error detected, recreating connection to:', fromUserId);
-            await this.createGroupOffer(fromUserId);
+            console.warn('[WebRTC Group] ⚠️ Transceiver error detected, recreating connection to:', fromId);
+            await this.createGroupOffer(fromId);
             return;
           }
 
           console.error('[WebRTC Group] Answer SDP:', answer.sdp?.substring(0, 200) + '...');
         }
       } else if (peerConnection.signalingState === 'stable') {
-        console.warn('[WebRTC Group] ⚠️ Peer connection already stable, ignoring answer from:', fromUserId);
+        console.warn('[WebRTC Group] ⚠️ Peer connection already stable, ignoring answer from:', fromId);
       } else {
-        console.warn('[WebRTC Group] ⚠️ Unexpected signaling state:', peerConnection.signalingState, 'for participant:', fromUserId);
+        console.warn('[WebRTC Group] ⚠️ Unexpected signaling state:', peerConnection.signalingState, 'for participant:', fromId);
       }
     } catch (error) {
       console.error('[WebRTC Group] Error handling answer from participant:', fromUserId, error);
@@ -702,19 +845,32 @@ export class GroupCallService {
   }
 
   // Handle group ICE candidate
-  async handleGroupIceCandidate(fromUserId: number, candidate: RTCIceCandidate): Promise<void> {
+  async handleGroupIceCandidate(fromUserId: number, candidate: any): Promise<void> {
     try {
-      console.log('[WebRTC Group] Handling ICE candidate from participant:', fromUserId);
+      if (!candidate) {
+        return;
+      }
+      const fromId = Number(fromUserId);
+      console.log('[WebRTC Group] Handling ICE candidate from participant:', fromId);
 
-      const peerConnection = this.groupPeerConnections.get(fromUserId);
+      const candidateObj = typeof candidate === 'string'
+        ? { candidate, sdpMid: '0', sdpMLineIndex: 0 }
+        : candidate;
+
+      if (!candidateObj.candidate && candidateObj.candidate !== '') {
+        console.warn('[WebRTC Group] Invalid candidate object from participant:', fromId);
+        return;
+      }
+
+      const peerConnection = this.groupPeerConnections.get(fromId);
 
       if (peerConnection?.remoteDescription) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidateObj));
       } else {
-        if (!this.groupPendingIceCandidates.has(fromUserId)) {
-          this.groupPendingIceCandidates.set(fromUserId, []);
+        if (!this.groupPendingIceCandidates.has(fromId)) {
+          this.groupPendingIceCandidates.set(fromId, []);
         }
-        this.groupPendingIceCandidates.get(fromUserId)?.push(candidate);
+        this.groupPendingIceCandidates.get(fromId)?.push(candidateObj);
       }
     } catch (error) {
       console.error('[WebRTC Group] Error handling ICE candidate from participant:', fromUserId, error);
@@ -723,27 +879,34 @@ export class GroupCallService {
 
   // Add pending ICE candidates for a participant
   private async addGroupPendingIceCandidates(participantUserId: number): Promise<void> {
-    const pendingCandidates = this.groupPendingIceCandidates.get(participantUserId);
-    const peerConnection = this.groupPeerConnections.get(participantUserId);
+    const participantId = Number(participantUserId);
+    const pendingCandidates = this.groupPendingIceCandidates.get(participantId);
+    const peerConnection = this.groupPeerConnections.get(participantId);
 
     if (pendingCandidates && pendingCandidates.length > 0 && peerConnection) {
-      console.log('[WebRTC Group] Adding', pendingCandidates.length, 'pending ICE candidates for participant:', participantUserId);
+      console.log('[WebRTC Group] Adding', pendingCandidates.length, 'pending ICE candidates for participant:', participantId);
 
       if ((peerConnection.signalingState as any) === 'closed') {
-        console.warn('[WebRTC Group] ⚠️ Peer connection is closed, skipping pending candidates for:', participantUserId);
-        this.groupPendingIceCandidates.delete(participantUserId);
+        console.warn('[WebRTC Group] ⚠️ Peer connection is closed, skipping pending candidates for:', participantId);
+        this.groupPendingIceCandidates.delete(participantId);
         return;
       }
 
       if (!peerConnection.remoteDescription) {
-        console.warn('[WebRTC Group] ⚠️ No remote description set yet, keeping candidates pending for:', participantUserId);
+        console.warn('[WebRTC Group] ⚠️ No remote description set yet, keeping candidates pending for:', participantId);
         return;
       }
 
-      for (const candidate of pendingCandidates) {
+      const candidatesToAdd = [...pendingCandidates];
+      this.groupPendingIceCandidates.delete(participantId);
+
+      for (const candidate of candidatesToAdd) {
         try {
           if (peerConnection.signalingState !== 'closed') {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            const candidateObj = typeof candidate === 'string'
+              ? { candidate, sdpMid: '0', sdpMLineIndex: 0 }
+              : candidate;
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidateObj));
           }
         } catch (error: any) {
           if (error.toString().includes('closed')) {
@@ -752,8 +915,7 @@ export class GroupCallService {
         }
       }
 
-      this.groupPendingIceCandidates.delete(participantUserId);
-      console.log('[WebRTC Group] ✅ Finished adding pending candidates for:', participantUserId);
+      console.log('[WebRTC Group] ✅ Finished adding pending candidates for:', participantId);
     }
   }
 

@@ -291,7 +291,8 @@ export function CallsScreen() {
         .substr(2, 9)}`;
 
       // 1:1 call callback
-      const targetUserId = call.isOutgoing ? call.toUserId : call.fromUserId;
+      const rawTargetId = call.isOutgoing ? call.toUserId : call.fromUserId;
+      const targetUserId = rawTargetId ? Number(rawTargetId) : 0;
       const targetName = call.contactName;
 
       // Look up the direct conversation for this user
@@ -299,7 +300,7 @@ export function CallsScreen() {
       try {
         const conversations = await apiRequest<any[]>('/api/direct-chats');
         const directConv = conversations?.find((c: any) =>
-          c.members?.some((m: any) => m.userId === targetUserId),
+          c.members?.some((m: any) => Number(m.userId) === targetUserId),
         );
         conversationId = directConv?.id;
       } catch (e) {

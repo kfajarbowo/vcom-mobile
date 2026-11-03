@@ -123,6 +123,9 @@ export function LoginScreen({ navigation }: Props) {
       console.log('[Login] 1. onSubmit started');
       setIsLoading(true);
 
+      // Guarantee the currently configured serverHost and serverPort are saved globally
+      await setApiServer(serverHost, serverPort);
+
       console.log('[Login] 2. Attempting login for NRP:', data.nrp);
       const response = await authService.login(data);
       console.log('[Login] 3. Login API success:', response.user.callsign);
@@ -322,6 +325,7 @@ export function LoginScreen({ navigation }: Props) {
                                 // Prefer the chatIp for login
                                 setServerHost(item.ip);
                                 setServerPort('5000');
+                                setApiServer(item.ip, '5000').catch((e) => console.error('[Login] Failed to auto-save site server:', e));
                                 setModalVisible(false);
                               }}
                             >

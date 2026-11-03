@@ -1197,34 +1197,29 @@ export function ChatRoom({
         return handleStartGroupCall(callType);
       }
 
-      // Find the other user ID from conversation members (same as web version)
-      console.log('[ChatRoom] Current user?.id:', user?.id, typeof user?.id);
-      console.log('[ChatRoom] conversationMembers:', conversationMembers);
-      console.log('[ChatRoom] conversationMembers.length:', conversationMembers.length);
+      // Find the other user ID (prioritize otherUserId prop if available, then conversation members)
+      const currentUserId = user?.id ? Number(user.id) : 0;
+      let recipientUserId: number | undefined;
 
-      conversationMembers.forEach((member: any, index: number) => {
-        console.log(`[ChatRoom] Checking member ${index}:`, {
-          userId: member.userId,
-          userIdType: typeof member.userId,
-          currentUserId: user?.id,
-          currentUserIdType: typeof user?.id,
-          matches: member.userId === user?.id,
-          notMatches: member.userId !== user?.id,
+      if (otherUserId && Number(otherUserId) !== currentUserId) {
+        recipientUserId = Number(otherUserId);
+        console.log('[ChatRoom] Using recipient from otherUserId prop:', recipientUserId);
+      } else if (conversationMembers && conversationMembers.length > 0) {
+        const otherMember = conversationMembers.find((member: any) => {
+          const mId = Number(member.userId ?? member.user_id ?? member.id);
+          return mId && currentUserId && mId !== currentUserId;
         });
-      });
 
-      const otherMember = conversationMembers.find((member: any) => {
-        const isOther = member.userId !== user?.id;
-        console.log(`[ChatRoom] Testing member ${member.userId}: isOther=${isOther}`);
-        return isOther;
-      });
+        if (otherMember) {
+          recipientUserId = Number(otherMember.userId ?? otherMember.user_id ?? otherMember.id);
+          console.log('[ChatRoom] Found otherMember from members list:', otherMember, 'id:', recipientUserId);
+        }
+      }
 
-      console.log('[ChatRoom] otherMember found:', otherMember);
-
-      if (!otherMember) {
+      if (!recipientUserId) {
         console.error('[ChatRoom] Could not find other member in conversation');
         console.error('[ChatRoom] conversationMembers:', JSON.stringify(conversationMembers, null, 2));
-        console.error('[ChatRoom] user?.id:', user?.id);
+        console.error('[ChatRoom] user?.id:', user?.id, 'otherUserId prop:', otherUserId);
         Alert.alert(
           'Call Failed',
           `Unable to determine call recipient. Members: ${conversationMembers.length}, UserId: ${user?.id}`,
@@ -1233,8 +1228,7 @@ export function ChatRoom({
         return;
       }
 
-      const recipientUserId = otherMember.userId;
-      console.log('[ChatRoom] Found recipient userId:', recipientUserId);
+      console.log('[ChatRoom] Final validated recipient userId:', recipientUserId);
 
       // Generate unique call ID
       const callId = `call_${Date.now()}_${user?.id}`;

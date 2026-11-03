@@ -112,18 +112,44 @@ export class OneOnOneCallService {
         console.log('[WebRTC 1:1] ICE candidate generated');
         const callState = useCallStore.getState();
         if (callState.callId) {
+          const rawTargetId = callState.isIncoming ? callState.callerUserId : callState.receiverUserId;
+          const targetId = rawTargetId ? Number(rawTargetId) : 0;
+          const fromId = Number(useAuthStore.getState().user?.id);
+          const callId = callState.callId;
+
+          const candidateData = {
+            candidate: event.candidate.candidate,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            sdpMid: event.candidate.sdpMid,
+          };
+
           websocketService.send({
             type: 'webrtc_ice_candidate',
+            callId,
+            call_id: callId,
+            targetUserId: targetId,
+            toUserId: targetId,
+            to_user_id: targetId,
+            recipientId: targetId,
+            fromUserId: fromId,
+            from_user_id: fromId,
+            callerUserId: fromId,
+            callerId: fromId,
+            candidate: candidateData,
             payload: {
-              callId: callState.callId,
-              targetUserId: callState.isIncoming ? callState.callerUserId : callState.receiverUserId,
-              candidate: {
-                candidate: event.candidate.candidate,
-                sdpMLineIndex: event.candidate.sdpMLineIndex,
-                sdpMid: event.candidate.sdpMid,
-              },
+              callId,
+              call_id: callId,
+              targetUserId: targetId,
+              toUserId: targetId,
+              to_user_id: targetId,
+              recipientId: targetId,
+              fromUserId: fromId,
+              from_user_id: fromId,
+              callerUserId: fromId,
+              callerId: fromId,
+              candidate: candidateData,
             },
-          });
+          } as any);
         }
       }
     };
@@ -164,6 +190,25 @@ export class OneOnOneCallService {
         console.log('[WebRTC 1:1] Remote video tracks:', remoteStream.getVideoTracks().length);
 
         useCallStore.getState().setRemoteStream(remoteStream);
+      }
+
+      // Jika remote media track sudah tiba saat status masih calling/connecting, aktifkan call segera!
+      const currentStatus = useCallStore.getState().status;
+      if (currentStatus === 'calling') {
+        console.log('[WebRTC 1:1] ✅ Remote track arrived while calling - setting status to active');
+        useCallStore.getState().setCallStatus('active');
+      }
+    };
+
+    // Listen to overall connection state (WebRTC modern)
+    (this.peerConnection as any).onconnectionstatechange = () => {
+      const state = this.peerConnection?.connectionState;
+      console.log('[WebRTC 1:1] 🌐 Connection state changed:', state);
+      if (state === 'connected') {
+        console.log('[WebRTC 1:1] ✅ Connection state connected! Setting status to active');
+        this.clearDisconnectTimer();
+        this.iceRestartAttempts = 0;
+        useCallStore.getState().setCallStatus('active');
       }
     };
 
@@ -365,39 +410,61 @@ export class OneOnOneCallService {
         return;
       }
 
+      const toId = Number(callState.receiverUserId);
+      const fromId = Number(user?.id);
+      const callerDisplayName = user?.callsign || user?.username || 'Unknown';
+
       // First, send initiate_call to notify recipient
       websocketService.send({
         type: 'initiate_call',
         payload: {
           callId: callState.callId,
-          toUserId: callState.receiverUserId,
+          toUserId: toId,
+          to_user_id: toId,
+          targetUserId: toId,
+          recipientId: toId,
           callType: callState.callType,
-          fromUserId: user?.id,
-          fromUserName: user?.callsign || user?.username || 'Unknown',
+          call_type: callState.callType,
+          fromUserId: fromId,
+          from_user_id: fromId,
+          callerUserId: fromId,
+          callerId: fromId,
+          fromUserName: callerDisplayName,
+          callerName: callerDisplayName,
           conversationId: callState.conversationId,
+          conversation_id: callState.conversationId,
         },
       });
 
-      console.log('[WebRTC 1:1] Sent initiate_call message');
+      console.log('[WebRTC 1:1] Sent initiate_call message to:', toId);
 
       // Then send the WebRTC offer
       websocketService.send({
         type: 'webrtc_offer',
         payload: {
           callId: callState.callId,
-          toUserId: callState.receiverUserId,  // Add target user ID
+          toUserId: toId,
+          to_user_id: toId,
+          targetUserId: toId,
+          recipientId: toId,
           offer: {
             type: offer.type,
             sdp: offer.sdp,
           },
           callType: callState.callType,
-          callerUserId: user?.id,
-          callerName: user?.callsign || user?.username || 'Unknown',
+          call_type: callState.callType,
+          fromUserId: fromId,
+          from_user_id: fromId,
+          callerUserId: fromId,
+          callerId: fromId,
+          fromUserName: callerDisplayName,
+          callerName: callerDisplayName,
           conversationId: callState.conversationId,
+          conversation_id: callState.conversationId,
         },
       });
 
-      console.log('[WebRTC 1:1] Sent webrtc_offer message');
+      console.log('[WebRTC 1:1] Sent webrtc_offer message to:', toId);
     } catch (error) {
       console.error('[WebRTC 1:1] Error starting call:', error);
       this.endCall();
@@ -448,85 +515,149 @@ export class OneOnOneCallService {
       await this.initializePeerConnection();
 
       // Restore saved ICE candidates so they can be added after remote description is set.
-      // Prepend (not overwrite): candidates that trickled in during initializePeerConnection's
-      // async work were pushed onto the freshly-cleared queue and must be kept too.
       this.pendingIceCandidates = [...savedIceCandidates, ...this.pendingIceCandidates];
       console.log('[WebRTC 1:1] Restored', savedIceCandidates.length, 'saved ICE candidates (total queued:', this.pendingIceCandidates.length, ')');
 
-      // Get user media
-      const stream = await this.getUserMedia(callType);
+      // Deteksi apakah offer dari Web menyertakan video m-line
+      const offerHasVideo = offer.sdp ? offer.sdp.includes('m=video') : false;
+      const isVideoCall = callType === 'video' || offerHasVideo;
 
-      // The caller may have cancelled while we were acquiring media (a very common race). Abort
-      // cleanly rather than building a live pc into an idle store and sending a null-target answer.
+      // Dapatkan local media stream sesuai jenis panggilan
+      let stream: MediaStream;
+      if (isVideoCall) {
+        stream = await this.getUserMedia('video');
+      } else {
+        try {
+          stream = await mediaDevices.getUserMedia(getAudioOnlyConstraints());
+          useCallStore.getState().setLocalStream(stream);
+        } catch (e) {
+          console.warn('[WebRTC 1:1] Failed to get audio-only media, fallback to default getUserMedia', e);
+          stream = await this.getUserMedia(callType);
+        }
+      }
+
+      // The caller may have cancelled while we were acquiring media. Abort cleanly.
       if (this.aborted(capturedCallId)) {
         console.warn('[WebRTC 1:1] Call no longer active after media acquisition, aborting answer');
         this.abortSetup(stream);
         return;
       }
 
-      // Add local stream to peer connection in consistent order (audio first, then video)
-      console.log('[WebRTC 1:1] Adding tracks to peer connection');
+      // Step 1: Set remote description (offer) FIRST agar transceiver terbentuk sesuai offer remote
+      console.log('[WebRTC 1:1] Setting remote description (offer)');
+      await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
 
-      // Add audio tracks first
+      // Step 2: Add local tracks to peer connection
+      console.log('[WebRTC 1:1] Adding local tracks to peer connection');
       stream.getAudioTracks().forEach((track) => {
         console.log('[WebRTC 1:1] Adding audio track, enabled:', track.enabled);
         this.peerConnection?.addTrack(track, stream);
       });
 
-      // Then add video tracks
-      stream.getVideoTracks().forEach((track) => {
-        console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
-        this.peerConnection?.addTrack(track, stream);
-      });
+      // Hanya tambahkan video track jika offer memang menyertakan video atau panggilan bertipe video
+      if (isVideoCall) {
+        stream.getVideoTracks().forEach((track) => {
+          console.log('[WebRTC 1:1] Adding video track, enabled:', track.enabled);
+          this.peerConnection?.addTrack(track, stream);
+        });
+      }
 
-      // Boost video bitrate to prevent blurriness on low-end devices
-      await this.boostVideoBitrate();
-
-      // Set remote description (offer)
-      await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
-
-      // Create answer
+      // Step 3: Create answer
       const answer = await this.peerConnection!.createAnswer();
       await this.peerConnection!.setLocalDescription(answer);
-      console.log('[WebRTC 1:1] Created answer');
+      console.log('[WebRTC 1:1] Created answer and set local description');
+
+      // Step 4: Boost video bitrate (SETELAH setLocalDescription agar transceiver siap)
+      if (isVideoCall) {
+        await this.boostVideoBitrate();
+      }
 
       // Get call state
       const callState = useCallStore.getState();
 
-      // Guard against a cancelled/reset call: never emit accept_call/webrtc_answer with a null
-      // callId or caller — the server would broadcast the answer to every user.
+      // Guard against a cancelled/reset call
       if (this.aborted(capturedCallId) || !callState.callId || !callState.callerUserId) {
         console.warn('[WebRTC 1:1] Aborting answer send — missing callId/caller or call cancelled');
         this.abortSetup(useCallStore.getState().localStream);
         return;
       }
 
-      // Send accept_call message to server to notify the caller
+      const toId = Number(callState.callerUserId);
+      const fromId = Number(useAuthStore.getState().user?.id);
+      const callId = callState.callId;
+
+      // Kirim accept_call DAN call_accepted ke server/caller
+      const acceptPayload = {
+        callId,
+        call_id: callId,
+        toUserId: toId,
+        to_user_id: toId,
+        targetUserId: toId,
+        recipientId: toId,
+        fromUserId: fromId,
+        from_user_id: fromId,
+        callerUserId: toId,
+        callerId: toId,
+      };
+
       websocketService.send({
         type: 'accept_call',
-        payload: {
-          callId: callState.callId,
-          toUserId: callState.callerUserId,
-        },
-      });
-      console.log('[WebRTC 1:1] Sent accept_call to caller:', callState.callerUserId);
+        ...acceptPayload,
+        payload: acceptPayload,
+      } as any);
 
-      // Send answer via WebSocket
+      websocketService.send({
+        type: 'call_accepted',
+        ...acceptPayload,
+        payload: acceptPayload,
+      } as any);
+
+      console.log('[WebRTC 1:1] Sent accept_call & call_accepted to caller:', toId);
+
+      // Kirim webrtc_answer ke Web via WebSocket dengan struktur flat + payload
+      const answerPayload = {
+        callId,
+        call_id: callId,
+        toUserId: toId,
+        to_user_id: toId,
+        targetUserId: toId,
+        recipientId: toId,
+        fromUserId: fromId,
+        from_user_id: fromId,
+        callerUserId: toId,
+        callerId: toId,
+        answer: {
+          type: answer.type,
+          sdp: answer.sdp,
+        },
+        sdp: answer.sdp,
+      };
+
       websocketService.send({
         type: 'webrtc_answer',
-        payload: {
-          callId: callState.callId,
-          toUserId: callState.callerUserId,  // Send answer back to the caller
-          answer: {
-            type: answer.type,
-            sdp: answer.sdp,
-          },
-        },
-      });
-      console.log('[WebRTC 1:1] Sent webrtc_answer to caller:', callState.callerUserId);
+        ...answerPayload,
+        payload: answerPayload,
+      } as any);
+
+      console.log('[WebRTC 1:1] Sent webrtc_answer to caller:', toId);
 
       // Add any pending ICE candidates
-      this.addPendingIceCandidates();
+      await this.addPendingIceCandidates();
+
+      // Safety fallback timer: jika dalam 2.5 detik status masih 'calling' dan koneksi tidak failed/closed,
+      // otomatis transisikan ke 'active' agar user tidak stuck di 'CONNECTING...'
+      setTimeout(() => {
+        const checkState = useCallStore.getState();
+        if (checkState.callId === callId && checkState.status === 'calling') {
+          const pcState = this.peerConnection?.iceConnectionState;
+          const connState = this.peerConnection?.connectionState;
+          console.log(`[WebRTC 1:1] ⏱️ Safety check: iceState=${pcState}, connState=${connState}`);
+          if (pcState !== 'failed' && pcState !== 'closed' && connState !== 'failed' && connState !== 'closed') {
+            console.log('[WebRTC 1:1] ✅ Auto-transitioning status from calling to active');
+            useCallStore.getState().setCallStatus('active');
+          }
+        }
+      }, 2500);
     } catch (error) {
       console.error('[WebRTC 1:1] Error answering call:', error);
       this.endCall();
@@ -670,15 +801,27 @@ export class OneOnOneCallService {
   }
 
   // Handle ICE candidate
-  async handleIceCandidate(candidate: RTCIceCandidate): Promise<void> {
+  async handleIceCandidate(candidate: any): Promise<void> {
     try {
+      if (!candidate) {
+        return;
+      }
       console.log('[WebRTC 1:1] Handling ICE candidate');
 
+      const candidateObj = typeof candidate === 'string'
+        ? { candidate, sdpMid: '0', sdpMLineIndex: 0 }
+        : candidate;
+
+      if (!candidateObj.candidate && candidateObj.candidate !== '') {
+        console.warn('[WebRTC 1:1] Invalid candidate object:', candidate);
+        return;
+      }
+
       if (this.peerConnection?.remoteDescription) {
-        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidateObj));
       } else {
         // Queue candidates until remote description is set
-        this.pendingIceCandidates.push(candidate);
+        this.pendingIceCandidates.push(candidateObj);
       }
     } catch (error) {
       console.error('[WebRTC 1:1] Error handling ICE candidate:', error);
@@ -715,15 +858,21 @@ export class OneOnOneCallService {
     if (this.pendingIceCandidates.length > 0) {
       console.log('[WebRTC 1:1] Adding pending ICE candidates:', this.pendingIceCandidates.length);
 
-      for (const candidate of this.pendingIceCandidates) {
+      const candidatesToAdd = [...this.pendingIceCandidates];
+      this.pendingIceCandidates = [];
+
+      for (const candidate of candidatesToAdd) {
         try {
-          await this.peerConnection?.addIceCandidate(new RTCIceCandidate(candidate));
+          if (this.peerConnection?.remoteDescription) {
+            const candidateObj = typeof candidate === 'string'
+              ? { candidate, sdpMid: '0', sdpMLineIndex: 0 }
+              : candidate;
+            await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidateObj));
+          }
         } catch (error) {
           console.error('[WebRTC 1:1] Error adding pending ICE candidate:', error);
         }
       }
-
-      this.pendingIceCandidates = [];
     }
   }
 

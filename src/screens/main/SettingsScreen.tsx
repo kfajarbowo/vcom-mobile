@@ -404,6 +404,7 @@ export function SettingsScreen() {
                                   }
                                   setServerHost(item.ip);
                                   setServerPort('5000');
+                                  setApiServer(item.ip, '5000').catch((e) => console.error('[Settings] Failed to auto-save site server:', e));
                                   setModalVisible(false);
                                 }}
                               >

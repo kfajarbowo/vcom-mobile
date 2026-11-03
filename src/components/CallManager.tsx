@@ -186,7 +186,12 @@ export function CallManager() {
           case 'incoming_call': {
             console.log('[CallManager] Incoming 1-on-1 call received');
             const payload = message.payload || message;
-            const { callId, callType, fromUserId, fromUserName, conversationId } = payload as any;
+            const callId = String(payload.callId ?? payload.call_id ?? '');
+            const callType = payload.callType || payload.call_type || 'audio';
+            const rawFromId = payload.fromUserId ?? payload.callerUserId ?? payload.callerId ?? payload.from_user_id;
+            const fromUserId = rawFromId ? Number(rawFromId) : 0;
+            const fromUserName = payload.fromUserName ?? payload.callerName ?? payload.from_user_name ?? `User ${fromUserId}`;
+            const conversationId = payload.conversationId ?? payload.conversation_id;
 
             console.log('[CallManager] Incoming call details:', {
               callId,
@@ -198,14 +203,14 @@ export function CallManager() {
             });
 
             // Ignore calls from ourselves
-            if (fromUserId === currentUser?.id) {
+            if (fromUserId && currentUser?.id && fromUserId === Number(currentUser.id)) {
               console.log('[CallManager] Ignoring incoming_call from self');
               break;
             }
 
             // If this call was already accepted via native notification/screen (status is already 'calling'),
             // do NOT downgrade back to 'ringing' so no modal is shown!
-            if (callStore.status === 'calling' && callStore.callId === callId) {
+            if (callStore.status === 'calling' && callStore.callId && String(callStore.callId) === String(callId)) {
               console.log('[CallManager] incoming_call arrived for already-accepted call; maintaining calling state');
               break;
             }
@@ -248,7 +253,7 @@ export function CallManager() {
                 // Set timeout to auto-reset if notification not answered (35 seconds)
                 setTimeout(() => {
                   const currentState = useCallStore.getState();
-                  if (currentState.callId === callId && currentState.status === 'ringing') {
+                  if (currentState.callId && String(currentState.callId) === String(callId) && currentState.status === 'ringing') {
                     console.log('[CallManager] ⏱️ Notification timed out (buffered offer case), resetting call state');
                     callStore.reset();
                   }
@@ -265,7 +270,9 @@ export function CallManager() {
                 type: 'reject_call',
                 payload: {
                   callId,
+                  call_id: callId,
                   toUserId: fromUserId,
+                  to_user_id: fromUserId,
                   reason: 'busy',
                 },
               });
@@ -279,14 +286,14 @@ export function CallManager() {
             // Handle both message structures
             const payload = message.payload || message;
 
-            const callId = payload.callId;
-            const offer = payload.offer;
-            const callType = payload.callType;
+            const callId = String(payload.callId ?? payload.call_id ?? (message as any).callId ?? (message as any).call_id ?? '');
+            const offer = payload.offer ?? (message as any).offer;
+            const callType = payload.callType ?? payload.call_type;
 
             console.log('[CallManager] Offer SDP received for callId:', callId);
             console.log('[CallManager] Current call status:', callStore.status);
             console.log('[CallManager] Current callId in store:', callStore.callId);
-            console.log('[CallManager] CallId match:', callStore.callId === callId);
+            console.log('[CallManager] CallId match:', callStore.callId && String(callStore.callId) === String(callId));
             console.log('[CallManager] Has offer in store before:', !!callStore.offer);
 
             // Validate required fields
@@ -298,8 +305,10 @@ export function CallManager() {
               break;
             }
 
+            const isCurrentCall = callStore.callId && String(callStore.callId) === String(callId);
+
             // Check if this offer is for an existing ringing call
-            if (callStore.status === 'ringing' && callStore.callId === callId) {
+            if (callStore.status === 'ringing' && isCurrentCall) {
               console.log('[CallManager] ✅ Adding offer to existing ringing call');
 
               // Update the call store with the offer
@@ -326,12 +335,12 @@ export function CallManager() {
               // Set timeout to auto-reset if notification not answered (35 seconds)
               setTimeout(() => {
                 const currentState = useCallStore.getState();
-                if (currentState.callId === callId && currentState.status === 'ringing') {
+                if (currentState.callId && String(currentState.callId) === String(callId) && currentState.status === 'ringing') {
                   console.log('[CallManager] ⏱️ Notification timed out, resetting call state');
                   callStore.reset();
                 }
               }, 35000); // 35 seconds (Android notification timeout is 30s)
-            } else if (callStore.status === 'calling' && callStore.callId === callId && !callStore.isGroupCall && callStore.isIncoming) {
+            } else if (callStore.status === 'calling' && isCurrentCall && !callStore.isGroupCall && callStore.isIncoming) {
               // Offer arrived for an incoming call that was pre-accepted from native notification/screen
               console.log('[CallManager] 🎯 Offer arrived for pre-accepted incoming call; answering now');
               callStore.setOffer(offer);
@@ -339,7 +348,7 @@ export function CallManager() {
                 callStore.setCallType(callType);
               }
               await webrtcService.answerCall(callType || callStore.callType, offer);
-            } else if ((callStore.status === 'active' || callStore.status === 'calling') && callStore.callId === callId && !callStore.isGroupCall) {
+            } else if ((callStore.status === 'active' || callStore.status === 'calling') && isCurrentCall && !callStore.isGroupCall) {
               // A second offer for the call we're already in = renegotiation (ICE restart, or the
               // peer enabling video mid-call). Apply it and answer without disturbing media.
               console.log('[CallManager] 🔁 Renegotiation offer for active call');
@@ -364,22 +373,20 @@ export function CallManager() {
 
             // Handle both message structures
             const payload = message.payload || message;
-            const { answer, callId: answerCallId } = payload as any;
+            const answer = payload.answer ?? (message as any).answer;
+            const answerCallId = payload.callId ?? payload.call_id ?? (message as any).callId ?? (message as any).call_id;
 
-            // Drop answers that don't belong to our current call. The web client sends answers
-            // untargeted and the server broadcasts them to everyone, so without this a foreign
-            // call's answer could be applied to (and wedge) our in-progress call.
+            // Drop answers that don't belong to our current call.
             if (callStore.isGroupCall) {
               console.log('[CallManager] Ignoring 1:1 answer while in a group call');
               break;
             }
-            if (answerCallId && callStore.callId && answerCallId !== callStore.callId) {
+            if (answerCallId && callStore.callId && String(answerCallId) !== String(callStore.callId)) {
               console.log('[CallManager] Ignoring answer for different callId:', answerCallId, 'current:', callStore.callId);
               break;
             }
 
             // Process answer if call is in calling or active state
-            // (active state can happen if call_accepted arrives before webrtc_answer)
             if (callStore.status === 'calling' || callStore.status === 'active') {
               console.log('[CallManager] ✅ Processing WebRTC answer');
               await webrtcService.handleAnswer(answer);
@@ -393,10 +400,8 @@ export function CallManager() {
             console.log('[CallManager] Received ICE candidate');
 
             // Handle different message structures
-            // Structure 1: { type, payload: { callId, candidate } }
-            // Structure 2: { type, callId, candidate } (what server sends)
             const candidate = message.payload?.candidate || (message as any).candidate;
-            const iceCallId = message.payload?.callId ?? (message as any).callId;
+            const iceCallId = message.payload?.callId ?? message.payload?.call_id ?? (message as any).callId ?? (message as any).call_id;
 
             if (!candidate) {
               console.error('[CallManager] ❌ No candidate found!');
@@ -404,9 +409,6 @@ export function CallManager() {
               break;
             }
 
-            // Only accept 1:1 ICE for the current 1:1 call. Reject while in a group call, when idle
-            // (no call to attach them to — otherwise foreign broadcast candidates accumulate and get
-            // injected into the next real call), or when the callId doesn't match.
             if (callStore.isGroupCall) {
               console.log('[CallManager] Ignoring 1:1 ICE while in a group call');
               break;
@@ -415,7 +417,7 @@ export function CallManager() {
               console.log('[CallManager] Ignoring 1:1 ICE while idle (no active/ringing call)');
               break;
             }
-            if (iceCallId && iceCallId !== callStore.callId) {
+            if (iceCallId && callStore.callId && String(iceCallId) !== String(callStore.callId)) {
               console.log('[CallManager] Ignoring ICE for different callId:', iceCallId, 'current:', callStore.callId);
               break;
             }
@@ -428,8 +430,8 @@ export function CallManager() {
           case 'call_accepted': {
             console.log('[CallManager] 🎉 Call accepted by remote peer!');
             const payload = message.payload || message;
-            const { callId: acceptedCallId } = payload as any;
-            if (acceptedCallId && callStore.callId && acceptedCallId !== callStore.callId) {
+            const acceptedCallId = payload.callId ?? payload.call_id ?? (message as any).callId ?? (message as any).call_id;
+            if (acceptedCallId && callStore.callId && String(acceptedCallId) !== String(callStore.callId)) {
               console.log('[CallManager] Ignoring call_accepted for different callId');
               break;
             }
@@ -443,10 +445,8 @@ export function CallManager() {
           case 'end_call':
           case 'call_ended': {
             const payload = message.payload || message;
-            const { callId: endedCallId } = payload as any;
-            // Only end if this termination is for the call we're actually in. A stale/misrouted
-            // call_ended for a previous callId must not tear down a new call.
-            if (endedCallId && callStore.callId && endedCallId !== callStore.callId) {
+            const endedCallId = payload.callId ?? payload.call_id ?? (message as any).callId ?? (message as any).call_id;
+            if (endedCallId && callStore.callId && String(endedCallId) !== String(callStore.callId)) {
               console.log('[CallManager] Ignoring end_call/call_ended for different callId:', endedCallId);
               break;
             }
@@ -462,8 +462,8 @@ export function CallManager() {
 
           case 'call_rejected': {
             const payload = message.payload || message;
-            const { callId: rejectedCallId } = payload as any;
-            if (rejectedCallId && callStore.callId && rejectedCallId !== callStore.callId) {
+            const rejectedCallId = payload.callId ?? payload.call_id ?? (message as any).callId ?? (message as any).call_id;
+            if (rejectedCallId && callStore.callId && String(rejectedCallId) !== String(callStore.callId)) {
               console.log('[CallManager] Ignoring call_rejected for different callId');
               break;
             }
@@ -721,30 +721,42 @@ export function CallManager() {
           case 'group_webrtc_offer': {
             console.log('[CallManager] Group WebRTC offer received');
             const payload = message.payload || message;
-            const { fromUserId, offer } = payload as any;
+            const rawFromId = payload.fromUserId ?? payload.from_user_id ?? payload.senderId ?? (message as any).fromUserId ?? (message as any).from_user_id;
+            const fromUserId = rawFromId ? Number(rawFromId) : 0;
+            const offer = payload.offer ?? (message as any).offer;
 
             console.log('[CallManager] Processing group offer from:', fromUserId);
-            await webrtcService.handleGroupOffer(fromUserId, offer);
+            if (fromUserId && offer) {
+              await webrtcService.handleGroupOffer(fromUserId, offer);
+            }
             break;
           }
 
           case 'group_webrtc_answer': {
             console.log('[CallManager] Group WebRTC answer received');
             const payload = message.payload || message;
-            const { fromUserId, answer } = payload as any;
+            const rawFromId = payload.fromUserId ?? payload.from_user_id ?? payload.senderId ?? (message as any).fromUserId ?? (message as any).from_user_id;
+            const fromUserId = rawFromId ? Number(rawFromId) : 0;
+            const answer = payload.answer ?? (message as any).answer;
 
             console.log('[CallManager] Processing group answer from:', fromUserId);
-            await webrtcService.handleGroupAnswer(fromUserId, answer);
+            if (fromUserId && answer) {
+              await webrtcService.handleGroupAnswer(fromUserId, answer);
+            }
             break;
           }
 
           case 'group_webrtc_ice_candidate': {
             console.log('[CallManager] Group WebRTC ICE candidate received');
             const payload = message.payload || message;
-            const { fromUserId, candidate } = payload as any;
+            const rawFromId = payload.fromUserId ?? payload.from_user_id ?? payload.senderId ?? (message as any).fromUserId ?? (message as any).from_user_id;
+            const fromUserId = rawFromId ? Number(rawFromId) : 0;
+            const candidate = payload.candidate ?? (message as any).candidate;
 
             console.log('[CallManager] Processing group ICE candidate from:', fromUserId);
-            await webrtcService.handleGroupIceCandidate(fromUserId, candidate);
+            if (fromUserId && candidate) {
+              await webrtcService.handleGroupIceCandidate(fromUserId, candidate);
+            }
             break;
           }
 
